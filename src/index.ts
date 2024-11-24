@@ -143,15 +143,42 @@ async function createRealtimeClient(
   });
 }
 
+// export default {
+//   async fetch(
+//     request: Request,
+//     env: Env,
+//     ctx: ExecutionContext
+//   ): Promise<Response> {
+//     // This would be a good place to add logic for
+//     // authentication, rate limiting, etc.
+//     // You could also do matching on the path or other things here.
+//     const upgradeHeader = request.headers.get("Upgrade");
+//     if (upgradeHeader === "websocket") {
+//       return createRealtimeClient(request, env, ctx);
+//     }
+
+//     return new Response("Expected Upgrade: websocket", { status: 426 });
+//   },
+// };
+export function isAllowedOrigin(origin: string | null): boolean {
+  if (!origin) return false;
+  return (
+    origin === "https://www.gateframes.com" ||
+    origin.startsWith("http://localhost:5173")
+  );
+}
+
 export default {
   async fetch(
     request: Request,
     env: Env,
     ctx: ExecutionContext
   ): Promise<Response> {
-    // This would be a good place to add logic for
-    // authentication, rate limiting, etc.
-    // You could also do matching on the path or other things here.
+    const origin = request.headers.get("Origin");
+    if (!isAllowedOrigin(origin)) {
+      return new Response("Unauthorized origin", { status: 403 });
+    }
+
     const upgradeHeader = request.headers.get("Upgrade");
     if (upgradeHeader === "websocket") {
       return createRealtimeClient(request, env, ctx);

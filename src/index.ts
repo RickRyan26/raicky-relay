@@ -31,9 +31,10 @@ async function createRealtimeClient(
 
   // Check origin before accepting connection
   const origin = request.headers.get("Origin");
-  if (origin !== "http://localhost:5173" && origin !== "https://www.gateframes.com") {
-    return new Response("Forbidden", { status: 403 });
-  }
+  console.warn("origin:", origin)
+  // if (origin !== "http://localhost:5173" && origin !== "https://www.gateframes.com") {
+  //   return new Response("Forbidden", { status: 403 });
+  // }
 
   serverSocket.accept();
 

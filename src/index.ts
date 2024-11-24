@@ -29,13 +29,6 @@ async function createRealtimeClient(
   const webSocketPair = new WebSocketPair();
   const [clientSocket, serverSocket] = Object.values(webSocketPair);
 
-  // Check origin before accepting connection
-  const origin = request.headers.get("Origin");
-  console.warn("origin:", origin)
-  // if (origin !== "http://localhost:5173" && origin !== "https://www.gateframes.com") {
-  //   return new Response("Forbidden", { status: 403 });
-  // }
-
   serverSocket.accept();
 
   // Copy protocol headers
@@ -150,15 +143,58 @@ async function createRealtimeClient(
   });
 }
 
+// export default {
+//   async fetch(
+//     request: Request,
+//     env: Env,
+//     ctx: ExecutionContext
+//   ): Promise<Response> {
+//     // This would be a good place to add logic for
+//     // authentication, rate limiting, etc.
+//     // You could also do matching on the path or other things here.
+//     const upgradeHeader = request.headers.get("Upgrade");
+//     if (upgradeHeader === "websocket") {
+//       return createRealtimeClient(request, env, ctx);
+//     }
+
+//     return new Response("Expected Upgrade: websocket", { status: 426 });
+//   },
+// };
+const ALLOWED_ORIGINS = [
+  "https://www.gateframes.com",
+  "http://localhost:5173",
+] as const;
+
+export function isAllowedOrigin(origin: string | null): boolean {
+  if (!origin) return false;
+
+  // Check exact matches first
+  if (ALLOWED_ORIGINS.includes(origin as (typeof ALLOWED_ORIGINS)[number])) {
+    return true;
+  }
+
+  // Check for development environments
+  if (origin.startsWith("http://localhost:")) {
+    const port = origin.split(":")[2];
+    return (
+      !isNaN(Number(port)) && Number(port) >= 1024 && Number(port) <= 65535
+    );
+  }
+
+  return false;
+}
+
 export default {
   async fetch(
     request: Request,
     env: Env,
     ctx: ExecutionContext
   ): Promise<Response> {
-    // This would be a good place to add logic for
-    // authentication, rate limiting, etc.
-    // You could also do matching on the path or other things here.
+    const origin = request.headers.get("Origin");
+    if (!isAllowedOrigin(origin)) {
+      return new Response("Unauthorized origin", { status: 403 });
+    }
+
     const upgradeHeader = request.headers.get("Upgrade");
     if (upgradeHeader === "websocket") {
       return createRealtimeClient(request, env, ctx);

@@ -160,12 +160,28 @@ async function createRealtimeClient(
 //     return new Response("Expected Upgrade: websocket", { status: 426 });
 //   },
 // };
+const ALLOWED_ORIGINS = [
+  "https://www.gateframes.com",
+  "http://localhost:5173",
+] as const;
+
 export function isAllowedOrigin(origin: string | null): boolean {
   if (!origin) return false;
-  return (
-    origin === "https://www.gateframes.com" ||
-    origin.startsWith("http://localhost:5173")
-  );
+
+  // Check exact matches first
+  if (ALLOWED_ORIGINS.includes(origin as (typeof ALLOWED_ORIGINS)[number])) {
+    return true;
+  }
+
+  // Check for development environments
+  if (origin.startsWith("http://localhost:")) {
+    const port = origin.split(":")[2];
+    return (
+      !isNaN(Number(port)) && Number(port) >= 1024 && Number(port) <= 65535
+    );
+  }
+
+  return false;
 }
 
 export default {

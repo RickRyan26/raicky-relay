@@ -162,6 +162,7 @@ async function createRealtimeClient(
 // };
 const ALLOWED_ORIGINS = [
   "https://www.gateframes.com",
+  "https://www.ricslist.com",
   "http://localhost:5173",
 ] as const;
 

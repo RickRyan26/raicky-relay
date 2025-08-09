@@ -162,11 +162,15 @@ async function createRealtimeClient(
 // };
 const ALLOWED_ORIGINS = [
   "https://www.gateframes.com",
+  "https://gateframes.com",
   "https://www.ricslist.com",
+  "https://ricslist.com",
   "http://localhost:5173",
 ] as const;
 
 export function isAllowedOrigin(origin: string | null): boolean {
+
+  console.log(origin)
   if (!origin) return false;
 
   // Check exact matches first

@@ -599,13 +599,27 @@ export function isAllowedOrigin(origin: string | null): boolean {
   return false;
 }
 
-function getAuthToken(url: URL): string | null {
-  // Prefer path /token/<b64url> if present to avoid query collisions
-  const parts = url.pathname.split("/").filter(Boolean);
-  if (parts.length >= 2 && parts[0] === "token") {
-    return parts[1] || null;
+function sanitizeToken(raw: string | null): string | null {
+  if (!raw) return null;
+  // Strip accidental query fragments like '?model=...'
+  const stopChars = ['?', '&', '#'];
+  let token = raw;
+  for (const ch of stopChars) {
+    const idx = token.indexOf(ch);
+    if (idx >= 0) token = token.slice(0, idx);
   }
-  return url.searchParams.get("auth");
+  // Keep only base64url characters
+  token = token.replace(/[^A-Za-z0-9_-]/g, '');
+  return token.length ? token : null;
+}
+
+function getAuthToken(url: URL): string | null {
+  // Prefer path /token/<b64url> or /auth/<b64url>
+  const parts = url.pathname.split('/').filter(Boolean);
+  if (parts.length >= 2 && (parts[0] === 'token' || parts[0] === 'auth')) {
+    return sanitizeToken(parts[1]);
+  }
+  return sanitizeToken(url.searchParams.get('auth'));
 }
 
 async function validateAuth(
@@ -704,7 +718,11 @@ export default {
 
       return createRealtimeClient(request, env, ctx);
     }
-
+    // Allow a simple OK on token/auth paths to avoid confusing logs/tools that ping these URLs without WS upgrade
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length >= 2 && (parts[0] === 'token' || parts[0] === 'auth')) {
+      return new Response('OK', { status: 200 });
+    }
     return new Response("Expected Upgrade: websocket", { status: 426 });
   },
 };

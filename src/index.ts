@@ -8,7 +8,7 @@ type Env = {
   ENCRYPTION_KEY: string; // base64-encoded AES key matching app server
 };
 
-const DEBUG = false; // set as true to see debug logs
+const DEBUG = true; // set as true to see debug logs
 const MODEL = "gpt-4o-realtime-preview";
 const OPENAI_URL = "wss://api.openai.com/v1/realtime";
 

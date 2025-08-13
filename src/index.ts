@@ -106,9 +106,9 @@ async function createRealtimeClient(
   let apiKey = env.OPENAI_API_KEY;
   if (protocolHeader) {
     const requestedProtocols = protocolHeader.split(",").map((p) => p.trim());
-    if (requestedProtocols.includes("realtime")) {
-      // Not exactly sure why this protocol needs to be accepted
-      responseHeaders.set("Sec-WebSocket-Protocol", "realtime");
+    // Echo the first requested subprotocol; the client SDK may require it
+    if (requestedProtocols.length > 0) {
+      responseHeaders.set("Sec-WebSocket-Protocol", requestedProtocols[0]);
     }
   }
 
@@ -159,17 +159,16 @@ async function createRealtimeClient(
 
   // Relay: Client -> OpenAI Realtime API Event
   const messageQueue: string[] = [];
+  const messageHandler = (data: string) => {
+    try {
+      const parsedEvent = JSON.parse(data);
+      realtimeClient.realtime.send(parsedEvent.type, parsedEvent);
+    } catch (e) {
+      owrError("Error parsing event from client", data);
+    }
+  };
 
   serverSocket.addEventListener("message", (event: MessageEvent) => {
-    const messageHandler = (data: string) => {
-      try {
-        const parsedEvent = JSON.parse(data);
-        realtimeClient.realtime.send(parsedEvent.type, parsedEvent);
-      } catch (e) {
-        owrError("Error parsing event from client", data);
-      }
-    };
-
     const data =
       typeof event.data === "string" ? event.data : event.data.toString();
     if (!realtimeClient.isConnected()) {
@@ -196,22 +195,28 @@ async function createRealtimeClient(
   //   model = modelParam;
   // }
 
-  // Connect to OpenAI Realtime API
-  try {
-    owrLog(`Connecting to OpenAI...`);
-    // @ts-expect-error Waiting on https://github.com/openai/openai-realtime-api-beta/pull/52
-    await realtimeClient.connect({ model });
-    owrLog(`Connected to OpenAI successfully!`);
-    while (messageQueue.length) {
-      const message = messageQueue.shift();
-      if (message) {
-        serverSocket.send(message);
+  // Connect to OpenAI Realtime API asynchronously; respond 101 immediately
+  ctx.waitUntil(
+    (async () => {
+      try {
+        owrLog(`Connecting to OpenAI...`);
+        // @ts-expect-error Waiting on https://github.com/openai/openai-realtime-api-beta/pull/52
+        await realtimeClient.connect({ model });
+        owrLog(`Connected to OpenAI successfully!`);
+        while (messageQueue.length) {
+          const message = messageQueue.shift();
+          if (message) {
+            messageHandler(message);
+          }
+        }
+      } catch (e) {
+        owrError("Error connecting to OpenAI", e);
+        try {
+          serverSocket.close(1011, "Upstream connect failure");
+        } catch {}
       }
-    }
-  } catch (e) {
-    owrError("Error connecting to OpenAI", e);
-    return new Response("Error connecting to OpenAI", { status: 500 });
-  }
+    })()
+  );
 
   return new Response(null, {
     status: 101,

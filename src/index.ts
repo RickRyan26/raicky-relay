@@ -214,14 +214,8 @@ async function createTwilioRealtimeBridge(
   serverSocket.accept();
 
   const responseHeaders = new Headers();
-  // Echo Twilio's requested subprotocol (commonly 'audio')
-  const protocolHeader = request.headers.get("Sec-WebSocket-Protocol");
-  if (protocolHeader) {
-    const requested = protocolHeader.split(",").map((p) => p.trim());
-    if (requested.includes("audio")) {
-      responseHeaders.set("Sec-WebSocket-Protocol", "audio");
-    }
-  }
+  // Force subprotocol to 'audio' for Twilio Media Streams
+  responseHeaders.set("Sec-WebSocket-Protocol", "audio");
 
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -373,6 +367,42 @@ async function createTwilioRealtimeBridge(
       owrError("Error processing OpenAI message (Twilio mode)", error);
     }
   });
+
+  // Also support raw websocket messages from OpenAI (some SDK versions emit strings)
+  // This ensures we never drop audio deltas if they arrive over ws directly
+  (realtimeClient as unknown as { socket?: WebSocket }).socket?.addEventListener(
+    "message",
+    (event: MessageEvent) => {
+      try {
+        const raw = typeof event.data === "string" ? event.data : "";
+        if (!raw) return;
+        const response = JSON.parse(raw) as {
+          type?: string;
+          delta?: string;
+          item_id?: string;
+        };
+        if (response.type && LOG_EVENT_TYPES.includes(response.type)) {
+          owrLog(`OpenAI ws message: ${response.type}`);
+        }
+        if (response.type === "response.audio.delta" && response.delta) {
+          const audioDelta = {
+            event: "media",
+            streamSid,
+            media: { payload: response.delta },
+          } as const;
+          serverSocket.send(JSON.stringify(audioDelta));
+          if (!responseStartTimestampTwilio) {
+            responseStartTimestampTwilio = latestMediaTimestamp;
+          }
+          if (response.item_id) lastAssistantItem = response.item_id;
+          sendMark();
+        }
+        if (response.type === "input_audio_buffer.speech_started") {
+          handleSpeechStartedEvent();
+        }
+      } catch {}
+    }
+  );
 
   realtimeClient.realtime.on("close", (metadata: { error: boolean }) => {
     owrLog(
@@ -548,7 +578,13 @@ export default {
     const upgradeHeader = request.headers.get("Upgrade");
     if (upgradeHeader === "websocket") {
       // Twilio Media Stream mode bypasses Origin checks (Twilio typically omits Origin)
-      if (mode === "twilio") {
+      const userAgent = request.headers.get("User-Agent") || "";
+      const hasTwilioSig = request.headers.has("x-twilio-signature");
+      const looksLikeTwilio =
+        mode === "twilio" ||
+        hasTwilioSig ||
+        userAgent.includes("Twilio.TmeWs");
+      if (looksLikeTwilio) {
         return createTwilioRealtimeBridge(request, env, ctx);
       }
 

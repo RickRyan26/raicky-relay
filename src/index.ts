@@ -8,7 +8,7 @@ type Env = {
 };
 
 const DEBUG = false; // set as true to see debug logs
-const MODEL = "gpt-4o-realtime-preview-2024-10-01";
+const MODEL = "gpt-4o-realtime-preview";
 const OPENAI_URL = "wss://api.openai.com/v1/realtime";
 
 function owrLog(...args: unknown[]) {
@@ -22,7 +22,9 @@ function owrError(...args: unknown[]) {
 }
 
 // Shared configuration/constants for Twilio bridging and default relay
-const VOICE: "alloy" | "echo" | "shimmer" = "alloy";
+const ALLOWED_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"] as const;
+type VoiceName = (typeof ALLOWED_VOICES)[number];
+const VOICE: VoiceName = "echo";
 const LOG_EVENT_TYPES: ReadonlyArray<string> = [
   "error",
   "response.content.done",
@@ -218,6 +220,13 @@ async function createTwilioRealtimeBridge(
   responseHeaders.set("Sec-WebSocket-Protocol", "audio");
 
   const apiKey = env.OPENAI_API_KEY;
+  const reqUrl = new URL(request.url);
+  const voiceParam = (reqUrl.searchParams.get("voice") || "").toLowerCase();
+  const selectedVoice: VoiceName = (ALLOWED_VOICES.includes(
+    voiceParam as VoiceName
+  )
+    ? (voiceParam as VoiceName)
+    : VOICE);
   if (!apiKey) {
     owrError(
       "Missing OpenAI API key. Did you forget to set OPENAI_API_KEY in .dev.vars (for local dev) or with wrangler secret put OPENAI_API_KEY (for production)?"
@@ -260,7 +269,7 @@ async function createTwilioRealtimeBridge(
         turn_detection: { type: "server_vad" },
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
-        voice: VOICE,
+        voice: selectedVoice,
         instructions: getSystemMessage(),
         modalities: ["text", "audio"],
         temperature: 0.8,

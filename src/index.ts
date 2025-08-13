@@ -214,13 +214,25 @@ async function createTwilioRealtimeBridge(
   serverSocket.accept();
 
   const responseHeaders = new Headers();
+  // Echo Twilio's requested subprotocol (commonly 'audio')
+  const protocolHeader = request.headers.get("Sec-WebSocket-Protocol");
+  if (protocolHeader) {
+    const requested = protocolHeader.split(",").map((p) => p.trim());
+    if (requested.includes("audio")) {
+      responseHeaders.set("Sec-WebSocket-Protocol", "audio");
+    }
+  }
 
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {
     owrError(
       "Missing OpenAI API key. Did you forget to set OPENAI_API_KEY in .dev.vars (for local dev) or with wrangler secret put OPENAI_API_KEY (for production)?"
     );
-    return new Response("Missing API key", { status: 401 });
+    // Accept and then close gracefully so Twilio sees a proper websocket close
+    try {
+      serverSocket.close(1011, "Server misconfigured: missing API key");
+    } catch {}
+    return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
   }
 
   // Per-call connection state
@@ -241,10 +253,10 @@ async function createTwilioRealtimeBridge(
     });
   } catch (e) {
     owrError("Error creating OpenAI RealtimeClient (Twilio mode)", e);
-    serverSocket.close();
-    return new Response("Error creating OpenAI RealtimeClient", {
-      status: 500,
-    });
+    try {
+      serverSocket.close(1011, "Upstream client init failure");
+    } catch {}
+    return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
   }
 
   function initializeSession() {
@@ -371,12 +383,18 @@ async function createTwilioRealtimeBridge(
     } catch {}
   });
 
+  // Buffer for Twilio events until OpenAI connects
+  const twilioQueue: string[] = [];
+
   // Twilio -> OpenAI
   serverSocket.addEventListener("message", (event: MessageEvent) => {
     try {
       const raw =
         typeof event.data === "string" ? event.data : event.data.toString();
       const twilioEvent = JSON.parse(raw) as TwilioEvent;
+      if (!realtimeClient?.isConnected()) {
+        twilioQueue.push(raw);
+      }
       switch (twilioEvent.event) {
         case "media": {
           if (isMediaEvent(twilioEvent)) {
@@ -429,17 +447,41 @@ async function createTwilioRealtimeBridge(
   });
 
   // Connect to OpenAI and initialize session
-  try {
-    owrLog(`Connecting to OpenAI (Twilio mode)...`);
-    // @ts-expect-error Waiting on https://github.com/openai/openai-realtime-api-beta/pull/52
-    await realtimeClient.connect({ model: MODEL });
-    owrLog(`Connected to OpenAI successfully (Twilio mode)!`);
-    initializeSession();
-    sendInitialConversationItem();
-  } catch (e) {
-    owrError("Error connecting to OpenAI (Twilio mode)", e);
-    return new Response("Error connecting to OpenAI", { status: 500 });
-  }
+  ctx.waitUntil(
+    (async () => {
+      try {
+        owrLog(`Connecting to OpenAI (Twilio mode)...`);
+        // @ts-expect-error Waiting on https://github.com/openai/openai-realtime-api-beta/pull/52
+        await realtimeClient!.connect({ model: MODEL });
+        owrLog(`Connected to OpenAI successfully (Twilio mode)!`);
+        initializeSession();
+        sendInitialConversationItem();
+        // Flush any queued Twilio media after connecting
+        while (twilioQueue.length) {
+          const msg = twilioQueue.shift();
+          if (!msg) continue;
+          try {
+            const eventParsed = JSON.parse(msg) as TwilioEvent;
+            if (isMediaEvent(eventParsed)) {
+              const audioAppend = {
+                type: "input_audio_buffer.append",
+                audio: eventParsed.media?.payload,
+              } as const;
+              realtimeClient!.realtime.send(
+                "input_audio_buffer.append",
+                audioAppend
+              );
+            }
+          } catch {}
+        }
+      } catch (e) {
+        owrError("Error connecting to OpenAI (Twilio mode)", e);
+        try {
+          serverSocket.close(1011, "Upstream connect failure");
+        } catch {}
+      }
+    })()
+  );
 
   return new Response(null, {
     status: 101,

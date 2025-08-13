@@ -95,23 +95,17 @@ async function createRealtimeClient(
   env: Env,
   ctx: ExecutionContext
 ) {
-  const webSocketPair = new WebSocketPair();
-  const [clientSocket, serverSocket] = Object.values(webSocketPair);
-
-  serverSocket.accept();
-
-  // Copy protocol headers
+  // Copy protocol headers (prepare response headers but delay accept until after auth)
   const responseHeaders = new Headers();
   const protocolHeader = request.headers.get("Sec-WebSocket-Protocol");
-  let apiKey = env.OPENAI_API_KEY;
   if (protocolHeader) {
     const requestedProtocols = protocolHeader.split(",").map((p) => p.trim());
-    // Echo the first requested subprotocol; the client SDK may require it
     if (requestedProtocols.length > 0) {
       responseHeaders.set("Sec-WebSocket-Protocol", requestedProtocols[0]);
     }
   }
 
+  const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {
     owrError(
       "Missing OpenAI API key. Did you forget to set OPENAI_API_KEY in .dev.vars (for local dev) or with wrangler secret put OPENAI_API_KEY (for production)?"
@@ -119,13 +113,18 @@ async function createRealtimeClient(
     return new Response("Missing API key", { status: 401 });
   }
 
-  // Enforce short-lived auth token for default relay clients
+  // Enforce short-lived auth token for default relay clients BEFORE opening WS
   const url = new URL(request.url);
   const auth = getAuthToken(url);
   const tokenOk = await validateAuth(auth, env, "client");
   if (!tokenOk) {
     return new Response("Unauthorized", { status: 401 });
   }
+
+  // Create and accept the websocket only after validation succeeds
+  const webSocketPair = new WebSocketPair();
+  const [clientSocket, serverSocket] = Object.values(webSocketPair);
+  serverSocket.accept();
 
   let realtimeClient: RealtimeClient | null = null;
 
@@ -633,8 +632,14 @@ async function validateAuth(
   expectedOrigin: "twilio" | "client"
 ): Promise<boolean> {
   try {
-    if (!authParam) return false;
-    if (!env.ENCRYPTION_KEY) return false;
+    if (!authParam) {
+      owrLog("[auth] missing token");
+      return false;
+    }
+    if (!env.ENCRYPTION_KEY) {
+      owrLog("[auth] missing ENCRYPTION_KEY");
+      return false;
+    }
     const key = base64ToBytes(env.ENCRYPTION_KEY);
     const encrypted = base64UrlToBytes(authParam);
     const plaintext = await decryptAesGcm(encrypted, key);
@@ -645,11 +650,21 @@ async function validateAuth(
       nonce: string;
     };
     const now = Date.now();
-    if (decoded.exp < now) return false;
-    if (decoded.iat > now + 30_000) return false;
-    if (decoded.origin !== expectedOrigin) return false;
+    if (decoded.exp < now) {
+      owrLog("[auth] token expired", { exp: decoded.exp, now });
+      return false;
+    }
+    if (decoded.iat > now + 30_000) {
+      owrLog("[auth] token iat too far in future", { iat: decoded.iat, now });
+      return false;
+    }
+    if (decoded.origin !== expectedOrigin) {
+      owrLog("[auth] origin mismatch", { expected: expectedOrigin, got: decoded.origin });
+      return false;
+    }
     return true;
   } catch {
+    owrLog("[auth] token decrypt/parse failed");
     return false;
   }
 }

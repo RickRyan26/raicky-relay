@@ -5,6 +5,7 @@ import { RealtimeClient } from "@openai/realtime-api-beta";
 
 type Env = {
   OPENAI_API_KEY: string;
+  RELAY_AUTH_KEY: string; // base64-encoded AES key matching app server
 };
 
 const DEBUG = false; // set as true to see debug logs
@@ -24,7 +25,7 @@ function owrError(...args: unknown[]) {
 // Shared configuration/constants for Twilio bridging and default relay
 const ALLOWED_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"] as const;
 type VoiceName = (typeof ALLOWED_VOICES)[number];
-const VOICE: VoiceName = "echo";
+const VOICE: VoiceName = "ash";
 const LOG_EVENT_TYPES: ReadonlyArray<string> = [
   "error",
   "response.content.done",
@@ -37,7 +38,11 @@ const LOG_EVENT_TYPES: ReadonlyArray<string> = [
 ];
 const SHOW_TIMING_MATH = false;
 
-function getSystemMessage(): string {
+
+const welcomeMessage = `Greet the customer with "Hello, I'm your GateFrames A.I. assistant! How can I help?"`
+
+// NOTE This prompt is a duplicate of the one in our Twilio Text endpoint.
+function getSystemMessage(timeStamp: string): string {
   return (
     `Voice: Be very friendly, kind, and expressive.
 
@@ -51,7 +56,9 @@ function getSystemMessage(): string {
 
     Guidelines:
     - Ask concise clarifying questions to understand the use-case (swing vs. slide, driveway width/slope, material/style preference, opener power and power source, climate, budget, security/accessory needs).
-    - Keep responses warm, upbeat, and professional; prioritize clarity over humor unless the customer invites it.`
+    - Keep responses warm, upbeat, and professional; prioritize clarity over humor unless the customer invites it.
+    
+    The current date is ${timeStamp}.`
   );
 }
 
@@ -110,6 +117,14 @@ async function createRealtimeClient(
       "Missing OpenAI API key. Did you forget to set OPENAI_API_KEY in .dev.vars (for local dev) or with wrangler secret put OPENAI_API_KEY (for production)?"
     );
     return new Response("Missing API key", { status: 401 });
+  }
+
+  // Enforce short-lived auth token for default relay clients
+  const url = new URL(request.url);
+  const auth = url.searchParams.get("auth");
+  const tokenOk = await validateAuth(auth, env, "client");
+  if (!tokenOk) {
+    return new Response("Unauthorized", { status: 401 });
   }
 
   let realtimeClient: RealtimeClient | null = null;
@@ -221,6 +236,16 @@ async function createTwilioRealtimeBridge(
 
   const apiKey = env.OPENAI_API_KEY;
   const reqUrl = new URL(request.url);
+  // Validate short-lived auth from app server
+  const auth = reqUrl.searchParams.get("auth");
+  const authOk = await validateAuth(auth, env, "twilio");
+  if (!authOk) {
+    // Accept and close gracefully so Twilio gets a websocket closure instead of HTTP error
+    try {
+      serverSocket.close(1008, "Unauthorized");
+    } catch {}
+    return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
+  }
   const voiceParam = (reqUrl.searchParams.get("voice") || "").toLowerCase();
   const selectedVoice: VoiceName = (ALLOWED_VOICES.includes(
     voiceParam as VoiceName
@@ -270,7 +295,7 @@ async function createTwilioRealtimeBridge(
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         voice: selectedVoice,
-        instructions: getSystemMessage(),
+        instructions: getSystemMessage(new Date().toISOString()),
         modalities: ["text", "audio"],
         temperature: 0.8,
       },
@@ -287,8 +312,7 @@ async function createTwilioRealtimeBridge(
         content: [
           {
             type: "input_text",
-            text:
-              "Greet the customer with \"Hello! I’m your GateFrames.com A.I. assistant, and I hope your day is going well! Do you have a question about your driveway gate or it's installation?\"",
+            text: welcomeMessage,
           },
         ],
       },
@@ -573,6 +597,72 @@ export function isAllowedOrigin(origin: string | null): boolean {
   }
 
   return false;
+}
+
+async function validateAuth(
+  authParam: string | null,
+  env: Env,
+  expectedOrigin: "twilio" | "client"
+): Promise<boolean> {
+  try {
+    if (!authParam) return false;
+    if (!env.RELAY_AUTH_KEY) return false;
+    const key = base64ToBytes(env.RELAY_AUTH_KEY);
+    const encrypted = base64UrlToBytes(authParam);
+    const plaintext = await decryptAesGcm(encrypted, key);
+    const decoded = JSON.parse(new TextDecoder().decode(plaintext)) as {
+      iat: number;
+      exp: number;
+      origin: string;
+      nonce: string;
+    };
+    const now = Date.now();
+    if (decoded.exp < now) return false;
+    if (decoded.iat > now + 30_000) return false;
+    if (decoded.origin !== expectedOrigin) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function base64UrlToBytes(b64url: string): Uint8Array {
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+  const bin = atob(b64 + pad);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function decryptAesGcm(data: Uint8Array, keyBytes: Uint8Array): Promise<Uint8Array> {
+  if (data.length < 33) throw new Error("invalid data");
+  const iv = data.slice(0, 16);
+  const authTag = data.slice(data.length - 16);
+  const ciphertext = data.slice(16, data.length - 16);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyBytes.buffer as ArrayBuffer,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"]
+  );
+  const combined = new Uint8Array(ciphertext.length + authTag.length);
+  combined.set(ciphertext, 0);
+  combined.set(authTag, ciphertext.length);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: iv.buffer as ArrayBuffer },
+    cryptoKey,
+    combined.buffer as ArrayBuffer
+  );
+  return new Uint8Array(plain);
 }
 
 export default {

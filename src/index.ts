@@ -5,7 +5,7 @@ import { RealtimeClient } from "@openai/realtime-api-beta";
 
 type Env = {
   OPENAI_API_KEY: string;
-  RELAY_AUTH_KEY: string; // base64-encoded AES key matching app server
+  ENCRYPTION_KEY: string; // base64-encoded AES key matching app server
 };
 
 const DEBUG = false; // set as true to see debug logs
@@ -121,7 +121,7 @@ async function createRealtimeClient(
 
   // Enforce short-lived auth token for default relay clients
   const url = new URL(request.url);
-  const auth = url.searchParams.get("auth");
+  const auth = getAuthToken(url);
   const tokenOk = await validateAuth(auth, env, "client");
   if (!tokenOk) {
     return new Response("Unauthorized", { status: 401 });
@@ -237,7 +237,7 @@ async function createTwilioRealtimeBridge(
   const apiKey = env.OPENAI_API_KEY;
   const reqUrl = new URL(request.url);
   // Validate short-lived auth from app server
-  const auth = reqUrl.searchParams.get("auth");
+  const auth = getAuthToken(reqUrl);
   const authOk = await validateAuth(auth, env, "twilio");
   if (!authOk) {
     // Accept and close gracefully so Twilio gets a websocket closure instead of HTTP error
@@ -599,6 +599,15 @@ export function isAllowedOrigin(origin: string | null): boolean {
   return false;
 }
 
+function getAuthToken(url: URL): string | null {
+  // Prefer path /token/<b64url> if present to avoid query collisions
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length >= 2 && parts[0] === "token") {
+    return parts[1] || null;
+  }
+  return url.searchParams.get("auth");
+}
+
 async function validateAuth(
   authParam: string | null,
   env: Env,
@@ -606,8 +615,8 @@ async function validateAuth(
 ): Promise<boolean> {
   try {
     if (!authParam) return false;
-    if (!env.RELAY_AUTH_KEY) return false;
-    const key = base64ToBytes(env.RELAY_AUTH_KEY);
+    if (!env.ENCRYPTION_KEY) return false;
+    const key = base64ToBytes(env.ENCRYPTION_KEY);
     const encrypted = base64UrlToBytes(authParam);
     const plaintext = await decryptAesGcm(encrypted, key);
     const decoded = JSON.parse(new TextDecoder().decode(plaintext)) as {

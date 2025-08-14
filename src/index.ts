@@ -42,12 +42,10 @@ const SHOW_TIMING_MATH = false;
 function getInitialMessageForMode(options: { voicemailMode: boolean }): string {
   if (options.voicemailMode) {
     return (
-      `Leave a concise, friendly voicemail now on behalf of Gate Frames. ` +
-      `Tone: warm, upbeat, confident; 12–20 seconds. ` +
-      `Content: apologize for missing them; mention we're ready to help with driveway gates/openers; ` +
-      `invite them to call or text back; mention GateFrames.com as an option; ` +
-      `end with a clear, polite sign-off. ` +
-      `Do not ask questions. Do not wait for a reply. Speak naturally and then stop.`
+      `You are leaving a short voicemail right now. Speak naturally as if recording and then stop. ` +
+      `Say you are the A.I. assistant for GateFrames.com, apologize for missing them, ` +
+      `and ask them to call back with any questions about GateFrames products. ` +
+      `Keep it simple, polite, and to the point. Do not ask questions. Do not wait for a reply.`
     );
   }
   return `Greet the customer with "Hello, I'm your GateFrames A.I. assistant! How can I help?"`;

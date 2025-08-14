@@ -43,8 +43,8 @@ function getInitialMessageForMode(options: { voicemailMode: boolean }): string {
   if (options.voicemailMode) {
     return (
       `You are leaving a short voicemail right now. Speak naturally as if recording and then stop. ` +
-      `Say you are the A.I. assistant for GateFrames.com, apologize for missing them, ` +
-      `and ask them to call back with any questions about GateFrames products. ` +
+      `Say you are the A.I. assistant for "Gate Frames dot com", apologize for missing them, ` +
+      `and ask them to call back with any questions about "Gate Frames" products. ` +
       `Keep it simple, polite, and to the point. Do not ask questions. Do not wait for a reply.`
     );
   }

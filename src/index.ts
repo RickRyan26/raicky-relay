@@ -77,9 +77,14 @@ function getSystemMessage(timeStamp: string): string {
 // Twilio Media Stream event types
 type NullableString = string | null;
 type TwilioBaseEvent = { event: string };
+type TwilioCustomParameter = { name?: string; key?: string; value?: string };
 type TwilioStartEvent = {
   event: "start";
-  start?: { streamSid?: string | null };
+  start?: {
+    streamSid?: string | null;
+    customParameters?: TwilioCustomParameter[];
+    custom_parameters?: TwilioCustomParameter[];
+  };
 };
 type TwilioMediaEvent = {
   event: "media";
@@ -264,7 +269,8 @@ async function createTwilioRealtimeBridge(
   }
   const voiceParam = (reqUrl.searchParams.get("voice") || "").toLowerCase();
   const amdParam = (reqUrl.searchParams.get("amd") || "").toLowerCase();
-  const voicemailMode = amdParam.includes("machine");
+  let voicemailMode = amdParam.includes("machine");
+  owrLog("[twilio] initial amd query param:", amdParam, "voicemailMode:", voicemailMode);
   const selectedVoice: VoiceName = (ALLOWED_VOICES.includes(
     voiceParam as VoiceName
   )
@@ -321,7 +327,11 @@ async function createTwilioRealtimeBridge(
     realtimeClient!.realtime.send("session.update", sessionUpdate);
   }
 
+  let initialUserMessageSent = false;
   function sendInitialConversationItem() {
+    if (initialUserMessageSent) return;
+    initialUserMessageSent = true;
+    owrLog("[twilio] sending initial message. voicemailMode:", voicemailMode);
     const initialMessage = getInitialMessageForMode({ voicemailMode });
     const initialConversationItem = {
       type: "conversation.item.create",
@@ -517,6 +527,23 @@ async function createTwilioRealtimeBridge(
         case "start": {
           if (isStartEvent(twilioEvent)) {
             streamSid = twilioEvent.start?.streamSid ?? null;
+            const customParams =
+              twilioEvent.start?.customParameters || twilioEvent.start?.custom_parameters || [];
+            owrLog("[twilio] start.customParameters:", customParams);
+            for (const p of customParams) {
+              const key = (p.name || p.key || "").toLowerCase();
+              const value = (p.value || "").toLowerCase();
+              if (key === "amd") {
+                voicemailMode = value.includes("machine");
+              }
+            }
+            owrLog("[twilio] computed voicemailMode after start:", voicemailMode);
+            if (realtimeClient?.isConnected()) {
+              sendInitialConversationItem();
+            } else {
+              // will be sent once connected
+              shouldSendInitialOnConnect = true;
+            }
           }
           responseStartTimestampTwilio = null;
           latestMediaTimestamp = 0;
@@ -546,6 +573,7 @@ async function createTwilioRealtimeBridge(
     owrLog("Twilio client disconnected.");
   });
 
+  let shouldSendInitialOnConnect = false;
   // Connect to OpenAI and initialize session
   ctx.waitUntil(
     (async () => {
@@ -555,7 +583,10 @@ async function createTwilioRealtimeBridge(
         await realtimeClient!.connect({ model: MODEL });
         owrLog(`Connected to OpenAI successfully (Twilio mode)!`);
         initializeSession();
-        sendInitialConversationItem();
+        if (shouldSendInitialOnConnect) {
+          sendInitialConversationItem();
+          shouldSendInitialOnConnect = false;
+        }
         // Flush any queued Twilio media after connecting
         while (twilioQueue.length) {
           const msg = twilioQueue.shift();

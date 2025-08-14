@@ -39,7 +39,19 @@ const LOG_EVENT_TYPES: ReadonlyArray<string> = [
 const SHOW_TIMING_MATH = false;
 
 
-const welcomeMessage = `Greet the customer with "Hello, I'm your GateFrames A.I. assistant! How can I help?"`
+function getInitialMessageForMode(options: { voicemailMode: boolean }): string {
+  if (options.voicemailMode) {
+    return (
+      `Leave a concise, friendly voicemail now on behalf of Gate Frames. ` +
+      `Tone: warm, upbeat, confident; 12–20 seconds. ` +
+      `Content: apologize for missing them; mention we're ready to help with driveway gates/openers; ` +
+      `invite them to call or text back; mention GateFrames.com as an option; ` +
+      `end with a clear, polite sign-off. ` +
+      `Do not ask questions. Do not wait for a reply. Speak naturally and then stop.`
+    );
+  }
+  return `Greet the customer with "Hello, I'm your GateFrames A.I. assistant! How can I help?"`;
+}
 
 // NOTE This prompt is a duplicate of the one in our Twilio Text endpoint.
 function getSystemMessage(timeStamp: string): string {
@@ -251,6 +263,8 @@ async function createTwilioRealtimeBridge(
     return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
   }
   const voiceParam = (reqUrl.searchParams.get("voice") || "").toLowerCase();
+  const amdParam = (reqUrl.searchParams.get("amd") || "").toLowerCase();
+  const voicemailMode = amdParam.includes("machine");
   const selectedVoice: VoiceName = (ALLOWED_VOICES.includes(
     voiceParam as VoiceName
   )
@@ -308,6 +322,7 @@ async function createTwilioRealtimeBridge(
   }
 
   function sendInitialConversationItem() {
+    const initialMessage = getInitialMessageForMode({ voicemailMode });
     const initialConversationItem = {
       type: "conversation.item.create",
       item: {
@@ -316,7 +331,7 @@ async function createTwilioRealtimeBridge(
         content: [
           {
             type: "input_text",
-            text: welcomeMessage,
+            text: initialMessage,
           },
         ],
       },
@@ -398,7 +413,19 @@ async function createTwilioRealtimeBridge(
       }
 
       if (evt.type === "input_audio_buffer.speech_started") {
-        handleSpeechStartedEvent();
+        if (!voicemailMode) {
+          handleSpeechStartedEvent();
+        }
+      }
+
+      // After the assistant finishes the first response in voicemail mode, close the stream
+      if (voicemailMode && evt.type === "response.done") {
+        try {
+          serverSocket.close(1000, "voicemail complete");
+        } catch {}
+        try {
+          realtimeClient?.disconnect();
+        } catch {}
       }
     } catch (error) {
       owrError("Error processing OpenAI message (Twilio mode)", error);
@@ -435,7 +462,13 @@ async function createTwilioRealtimeBridge(
           sendMark();
         }
         if (response.type === "input_audio_buffer.speech_started") {
-          handleSpeechStartedEvent();
+          if (!voicemailMode) {
+            handleSpeechStartedEvent();
+          }
+        }
+        if (voicemailMode && response.type === "response.done") {
+          try { serverSocket.close(1000, "voicemail complete"); } catch {}
+          try { realtimeClient?.disconnect(); } catch {}
         }
       } catch {}
     }

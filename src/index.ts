@@ -168,6 +168,8 @@ async function handleTwilioConversationsWebhook(
   const form = await request.formData();
   const eventType = (form.get("EventType") as string | null) || "";
   const conversationSid = (form.get("ConversationSid") as string | null) || "";
+  const messageSid = (form.get("MessageSid") as string | null) || null;
+  const messageIndex = (form.get("MessageIndex") as string | null) || null;
   let author = ((form.get("Author") as string | null) || "").toLowerCase();
   let body = (form.get("Body") as string | null) || (form.get("MessageBody") as string | null) || "";
 
@@ -176,31 +178,45 @@ async function handleTwilioConversationsWebhook(
   // Ack immediately; do the actual work in the background to avoid 5s timeouts
   const resp = new Response("ok", { status: 200 });
 
+  // Simple in-memory idempotency (best-effort in Workers)
+  const now = Date.now();
+  // @ts-expect-error attach a map on globalThis to persist across requests in same isolate
+  globalThis.__processed ||= new Map<string, number>();
+  // @ts-expect-error
+  const processed: Map<string, number> = globalThis.__processed;
+  for (const [k, ts] of processed) {
+    if (now - ts > 10 * 60 * 1000) processed.delete(k);
+  }
+  const dedupeKey = messageSid || (conversationSid && messageIndex ? `${conversationSid}:${messageIndex}` : null);
+
   ctx.waitUntil(
     (async () => {
       try {
         if (!conversationSid) return;
-        // Only act on post-event message or state-updated for fresh group auto-creation
         if (eventType !== "onMessageAdded" && eventType !== "onConversationStateUpdated") return;
 
         // If we got state-updated, fetch the most recent message to process
         if (eventType === 'onConversationStateUpdated') {
           try {
-            const msgRes = await twilioGet(env, `/Conversations/${conversationSid}/Messages?PageSize=20`);
-            const msgJson = (await msgRes.json()) as { messages?: Array<{ author?: string; body?: string; index?: number }> };
-            const messages = (msgJson.messages || []) as Array<{ author?: string; body?: string; index?: number }>;
-            if (messages.length > 0) {
-              // choose the message with the highest index
-              const latest = messages.reduce((a, b) => ((a.index || 0) >= (b.index || 0) ? a : b));
+            const msgRes = await twilioGet(env, `/Conversations/${conversationSid}/Messages?PageSize=1`);
+            const msgJson = (await msgRes.json()) as { messages?: Array<{ author?: string; body?: string; index?: number; sid?: string }> };
+            const latest = (msgJson.messages || [])[0];
+            if (latest) {
               author = (latest.author || '').toLowerCase();
               body = latest.body || '';
-              owrLog("[stateUpdated] derived latest message", { author, hasBody: Boolean(body) });
             }
           } catch {}
         }
 
         if (!body) return;
         if (author === BOT_IDENTITY || author === "system") return;
+
+        // Idempotency check after we know the target message
+        if (dedupeKey && processed.has(dedupeKey)) {
+          owrLog('[dedupe] already processed', dedupeKey);
+          return;
+        }
+        if (dedupeKey) processed.set(dedupeKey, now);
 
         // @call handling (works for 1:1 or group)
         const callTargets = parseCallNumbers(body);
@@ -231,17 +247,6 @@ async function handleTwilioConversationsWebhook(
 
         // Ensure bot projection exists
         await ensureBotParticipant(env, conversationSid);
-
-        // Avoid duplicates: if the latest message is from bot, skip
-        try {
-          const latestRes = await twilioGet(env, `/Conversations/${conversationSid}/Messages?PageSize=5`);
-          const latestJson = (await latestRes.json()) as { messages?: Array<{ author?: string; index?: number }> };
-          const latestMsgs = latestJson.messages || [];
-          if (latestMsgs.some((m) => (m.author || '').toLowerCase() === BOT_IDENTITY)) {
-            owrLog('[dedupe] latest message already from bot; skipping');
-            return;
-          }
-        } catch {}
 
         // Call AI service
         const baseUrl = "https://www.gateframes.com";

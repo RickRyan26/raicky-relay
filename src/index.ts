@@ -1052,8 +1052,15 @@ export default {
     }
 
     // HTTP endpoints
-    if (url.pathname === "/twilio/convo" && request.method === "POST") {
+    const pathname = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
+    if (pathname === "/twilio/convo" && request.method === "POST") {
       return handleTwilioConversationsWebhook(request, env, ctx);
+    }
+
+    // If Twilio posts to an unexpected path, log for diagnostics
+    if (request.method === 'POST' && request.headers.has('x-twilio-signature')) {
+      console.log('[http] unexpected Twilio POST', { path: url.pathname });
+      return new Response('ok', { status: 200 });
     }
 
     // Allow a simple OK on token/auth paths to avoid confusing logs/tools that ping these URLs without WS upgrade

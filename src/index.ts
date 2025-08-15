@@ -3,9 +3,21 @@
 
 import { RealtimeClient } from "@openai/realtime-api-beta";
 
+// TODO Secure the convo endpoint:
+// Set the Post-Event URL to include HTTP Basic credentials:
+// Example: https://USER:PASS@openai-workers-relay.rickryan26.workers.dev/twilio/convo
+// const auth = request.headers.get('Authorization') || '';
+// const expected = 'Basic ' + btoa(`${env.BASIC_USER}:${env.BASIC_PASS}`);
+// if (auth !== expected) {
+//   return new Response('Unauthorized', { status: 401, headers: { 'WWW-Authenticate': 'Basic realm="Twilio"' } });
+// }
+
 type Env = {
   OPENAI_API_KEY: string;
   ENCRYPTION_KEY: string; // base64-encoded AES key matching app server
+  // Added for Twilio Conversations webhook processing
+  TWILIO_ACCOUNT_SID: string;
+  TWILIO_AUTH_TOKEN: string;
 };
 
 const DEBUG = true; // set as true to see debug logs
@@ -38,6 +50,205 @@ const LOG_EVENT_TYPES: ReadonlyArray<string> = [
 ];
 const SHOW_TIMING_MATH = false;
 
+// ---- Conversations webhook helpers ----
+const TWILIO_CONV_BASE = "https://conversations.twilio.com/v1";
+const TWILIO_API_BASE = "https://api.twilio.com/2010-04-01";
+const BOT_IDENTITY = "gateframes-bot";
+const PROJECTED_ADDRESS = "+14082605145"; // must be in your Messaging Service sender pool
+
+function twilioAuthHeader(env: Env): string {
+  const token = btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`);
+  return `Basic ${token}`;
+}
+
+async function twilioGet(env: Env, path: string): Promise<Response> {
+  return fetch(`${TWILIO_CONV_BASE}${path}`, {
+    method: "GET",
+    headers: {
+      Authorization: twilioAuthHeader(env),
+      Accept: "application/json",
+    },
+  });
+}
+
+async function twilioPost(env: Env, path: string, body: URLSearchParams): Promise<Response> {
+  return fetch(`${TWILIO_CONV_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: twilioAuthHeader(env),
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body,
+  });
+}
+
+async function ensureBotParticipant(env: Env, conversationSid: string): Promise<void> {
+  try {
+    const res = await twilioGet(env, `/Conversations/${conversationSid}/Participants`);
+    const data = (await res.json()) as { participants?: Array<{ identity?: string }> };
+    const exists = (data.participants || []).some(
+      (p) => (p.identity || "").toLowerCase() === BOT_IDENTITY
+    );
+    if (!exists) {
+      const body = new URLSearchParams({
+        identity: BOT_IDENTITY,
+        "MessagingBinding.ProjectedAddress": PROJECTED_ADDRESS,
+      });
+      await twilioPost(env, `/Conversations/${conversationSid}/Participants`, body).catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function sanitizeUsNumber(input: string): string | null {
+  const digits = input.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+  if (digits.length === 10) return digits;
+  return null;
+}
+
+function parseCallNumbers(text: string): string[] {
+  const idx = text.toLowerCase().indexOf("@call");
+  if (idx < 0) return [];
+  const after = text.slice(idx + 5);
+  const tokens = after
+    .split(/[\s,;]+/u)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  const numbers: string[] = [];
+  for (const token of tokens) {
+    const clean = sanitizeUsNumber(token);
+    if (clean) numbers.push(clean);
+  }
+  return numbers;
+}
+
+async function placeOutboundCalls(env: Env, e164Targets: string[], voiceUrl: string): Promise<string[]> {
+  const callSids: string[] = [];
+  for (const e164 of e164Targets) {
+    try {
+      const body = new URLSearchParams({
+        To: e164,
+        From: PROJECTED_ADDRESS,
+        Url: voiceUrl,
+        Method: "GET",
+        MachineDetection: "DetectMessageEnd",
+      });
+      const res = await fetch(
+        `${TWILIO_API_BASE}/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: twilioAuthHeader(env),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body,
+        }
+      );
+      if (res.ok) {
+        const json = (await res.json()) as { sid?: string };
+        if (json.sid) callSids.push(json.sid);
+      } else {
+        owrError("Failed to create call", await res.text());
+      }
+    } catch (e) {
+      owrError("Failed to start outbound call to", e164, e);
+    }
+  }
+  return callSids;
+}
+
+async function handleTwilioConversationsWebhook(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  const form = await request.formData();
+  const eventType = (form.get("EventType") as string | null) || "";
+  const conversationSid = (form.get("ConversationSid") as string | null) || "";
+  const author = ((form.get("Author") as string | null) || "").toLowerCase();
+  const body = (form.get("Body") as string | null) || (form.get("MessageBody") as string | null) || "";
+
+  // Ack immediately; do the actual work in the background to avoid 5s timeouts
+  const resp = new Response("ok", { status: 200 });
+
+  ctx.waitUntil(
+    (async () => {
+      try {
+        if (!conversationSid) return;
+        if (author === BOT_IDENTITY || author === "system") return;
+        // Only act on post-event message
+        if (eventType !== "onMessageAdded") return;
+
+        // @call handling (works for 1:1 or group)
+        const callTargets = parseCallNumbers(body);
+        if (callTargets.length > 0) {
+          const e164Targets = callTargets.map((ten) => `+1${ten}`);
+          const origin = new URL(request.url).origin.replace(/\/$/, "");
+          const voiceUrl = `https://www.gateframes.com/api/twilio/voice`;
+          const started = await placeOutboundCalls(env, e164Targets, voiceUrl);
+          const humanList = e164Targets.join(", ");
+          const ack = started.length > 0
+            ? `Calling ${humanList} now!`
+            : `Sorry, I couldn't call ${humanList}`;
+          await ensureBotParticipant(env, conversationSid);
+          await twilioPost(env, `/Conversations/${conversationSid}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: ack }));
+          return;
+        }
+
+        // If group (2+ non-bot identities), require @ai mention
+        let isGroup = false;
+        try {
+          const partsRes = await twilioGet(env, `/Conversations/${conversationSid}/Participants`);
+          const parts = (await partsRes.json()) as { participants?: Array<{ identity?: string }> };
+          const nonBot = (parts.participants || []).filter(
+            (p) => ![BOT_IDENTITY, "system"].includes((p.identity || "").toLowerCase())
+          );
+        isGroup = nonBot.length >= 2;
+        } catch {}
+        if (isGroup && !/(^|\s)@ai(\b|\s|:)/i.test(body)) return;
+
+        // Ensure bot projection exists
+        await ensureBotParticipant(env, conversationSid);
+
+        // Call AI service
+        const baseUrl = "https://www.gateframes.com";
+        let reply = `Sorry, I'm currently under maintenance..`;
+        try {
+          const aiRes = await fetch(`${baseUrl}/api/chat/nonstream`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              messages: [
+                { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: body }] },
+              ],
+            }),
+          });
+          if (aiRes.ok) {
+            const aiJson = (await aiRes.json()) as { text?: string };
+            reply = aiJson?.text ?? reply;
+          }
+        } catch {}
+
+        // Send reply to Conversation
+        const msgBody = new URLSearchParams({ Author: BOT_IDENTITY, Body: reply });
+        await twilioPost(env, `/Conversations/${conversationSid}/Messages`, msgBody);
+      } catch (e) {
+        try {
+          const fallback = new URLSearchParams({
+            Author: BOT_IDENTITY,
+            Body: `Sorry, I'm currently under maintenance...`,
+          });
+          await twilioPost(env, `/Conversations/${conversationSid}/Messages`, fallback);
+        } catch {}
+      }
+    })()
+  );
+
+  return resp;
+}
 
 function getInitialMessageForMode(options: { voicemailMode: boolean }): string {
   if (options.voicemailMode) {
@@ -800,6 +1011,12 @@ export default {
 
       return createRealtimeClient(request, env, ctx);
     }
+
+    // HTTP endpoints
+    if (url.pathname === "/twilio/convo" && request.method === "POST") {
+      return handleTwilioConversationsWebhook(request, env, ctx);
+    }
+
     // Allow a simple OK on token/auth paths to avoid confusing logs/tools that ping these URLs without WS upgrade
     const parts = url.pathname.split('/').filter(Boolean);
     if (parts.length >= 2 && (parts[0] === 'token' || parts[0] === 'auth')) {

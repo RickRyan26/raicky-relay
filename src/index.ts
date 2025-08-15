@@ -168,8 +168,10 @@ async function handleTwilioConversationsWebhook(
   const form = await request.formData();
   const eventType = (form.get("EventType") as string | null) || "";
   const conversationSid = (form.get("ConversationSid") as string | null) || "";
-  const author = ((form.get("Author") as string | null) || "").toLowerCase();
-  const body = (form.get("Body") as string | null) || (form.get("MessageBody") as string | null) || "";
+  let author = ((form.get("Author") as string | null) || "").toLowerCase();
+  let body = (form.get("Body") as string | null) || (form.get("MessageBody") as string | null) || "";
+
+  owrLog("[/twilio/convo]", { eventType, conversationSid, author, hasBody: Boolean(body) });
 
   // Ack immediately; do the actual work in the background to avoid 5s timeouts
   const resp = new Response("ok", { status: 200 });
@@ -178,15 +180,32 @@ async function handleTwilioConversationsWebhook(
     (async () => {
       try {
         if (!conversationSid) return;
+        // Only act on post-event message or state-updated for fresh group auto-creation
+        if (eventType !== "onMessageAdded" && eventType !== "onConversationStateUpdated") return;
+
+        // If we got state-updated, fetch the most recent message to process
+        if (eventType === 'onConversationStateUpdated') {
+          try {
+            const msgRes = await twilioGet(env, `/Conversations/${conversationSid}/Messages?PageSize=20`);
+            const msgJson = (await msgRes.json()) as { messages?: Array<{ author?: string; body?: string; index?: number }> };
+            const messages = (msgJson.messages || []) as Array<{ author?: string; body?: string; index?: number }>;
+            if (messages.length > 0) {
+              // choose the message with the highest index
+              const latest = messages.reduce((a, b) => ((a.index || 0) >= (b.index || 0) ? a : b));
+              author = (latest.author || '').toLowerCase();
+              body = latest.body || '';
+              owrLog("[stateUpdated] derived latest message", { author, hasBody: Boolean(body) });
+            }
+          } catch {}
+        }
+
+        if (!body) return;
         if (author === BOT_IDENTITY || author === "system") return;
-        // Only act on post-event message
-        if (eventType !== "onMessageAdded") return;
 
         // @call handling (works for 1:1 or group)
         const callTargets = parseCallNumbers(body);
         if (callTargets.length > 0) {
           const e164Targets = callTargets.map((ten) => `+1${ten}`);
-          const origin = new URL(request.url).origin.replace(/\/$/, "");
           const voiceUrl = `https://www.gateframes.com/api/twilio/voice`;
           const started = await placeOutboundCalls(env, e164Targets, voiceUrl);
           const humanList = e164Targets.join(", ");
@@ -206,12 +225,23 @@ async function handleTwilioConversationsWebhook(
           const nonBot = (parts.participants || []).filter(
             (p) => ![BOT_IDENTITY, "system"].includes((p.identity || "").toLowerCase())
           );
-        isGroup = nonBot.length >= 2;
+          isGroup = nonBot.length >= 2;
         } catch {}
         if (isGroup && !/(^|\s)@ai(\b|\s|:)/i.test(body)) return;
 
         // Ensure bot projection exists
         await ensureBotParticipant(env, conversationSid);
+
+        // Avoid duplicates: if the latest message is from bot, skip
+        try {
+          const latestRes = await twilioGet(env, `/Conversations/${conversationSid}/Messages?PageSize=5`);
+          const latestJson = (await latestRes.json()) as { messages?: Array<{ author?: string; index?: number }> };
+          const latestMsgs = latestJson.messages || [];
+          if (latestMsgs.some((m) => (m.author || '').toLowerCase() === BOT_IDENTITY)) {
+            owrLog('[dedupe] latest message already from bot; skipping');
+            return;
+          }
+        } catch {}
 
         // Call AI service
         const baseUrl = "https://www.gateframes.com";
@@ -250,16 +280,22 @@ async function handleTwilioConversationsWebhook(
   return resp;
 }
 
-function getInitialMessageForMode(options: { voicemailMode: boolean }): string {
+function getInitialMessageForMode(options: { voicemailMode: boolean; callDirection: 'inbound' | 'outbound' | 'unknown' }): string {
+  const baseBrand = `I'm your GateFrames A.I. assistant.`;
   if (options.voicemailMode) {
     return (
-      `You are leaving a short voicemail right now. Speak naturally as if recording and then stop. ` +
-      `Say you are the A.I. assistant for "Gate Frames dot com", apologize for missing them, ` +
-      `and ask them to call back with any questions about "Gate Frames" products. ` +
-      `Keep it simple, polite, and to the point. Do not ask questions. Do not wait for a reply.`
+      `${baseBrand} I'm leaving a short voicemail now. ` +
+      `Sorry we missed you—please call back with any questions about GateFrames driveway gates, openers, or accessories. ` +
+      `Have a great day!`
     );
   }
-  return `Greet the customer with "Hello, I'm your GateFrames A.I. assistant! How can I help?"`;
+  if (options.callDirection === 'inbound') {
+    return `${baseBrand} Thanks for calling! How can I help you today?`;
+  }
+  if (options.callDirection === 'outbound') {
+    return `${baseBrand} I’m reaching out to help, what can I assist you with today?`;
+  }
+  return `${baseBrand} How can I help?`;
 }
 
 // NOTE This prompt is a duplicate of the one in our Twilio Text endpoint.
@@ -479,6 +515,7 @@ async function createTwilioRealtimeBridge(
   const voiceParam = (reqUrl.searchParams.get("voice") || "").toLowerCase();
   const amdParam = (reqUrl.searchParams.get("amd") || "").toLowerCase();
   let voicemailMode = amdParam.includes("machine");
+  let callDirection: 'inbound' | 'outbound' | 'unknown' = 'unknown';
   owrLog("[twilio] initial amd query param:", amdParam, "voicemailMode:", voicemailMode);
   const selectedVoice: VoiceName = (ALLOWED_VOICES.includes(
     voiceParam as VoiceName
@@ -540,8 +577,8 @@ async function createTwilioRealtimeBridge(
   function sendInitialConversationItem() {
     if (initialUserMessageSent) return;
     initialUserMessageSent = true;
-    owrLog("[twilio] sending initial message. voicemailMode:", voicemailMode);
-    const initialMessage = getInitialMessageForMode({ voicemailMode });
+    owrLog("[twilio] sending initial message. voicemailMode:", voicemailMode, 'direction:', callDirection);
+    const initialMessage = getInitialMessageForMode({ voicemailMode, callDirection });
     const initialConversationItem = {
       type: "conversation.item.create",
       item: {
@@ -744,9 +781,11 @@ async function createTwilioRealtimeBridge(
               const value = (p.value || "").toLowerCase();
               if (key === "amd") {
                 voicemailMode = value.includes("machine");
+              } else if (key === 'direction') {
+                if (value === 'inbound' || value === 'outbound') callDirection = value;
               }
             }
-            owrLog("[twilio] computed voicemailMode after start:", voicemailMode);
+            owrLog("[twilio] computed voicemailMode after start:", voicemailMode, "direction:", callDirection);
             if (realtimeClient?.isConnected()) {
               sendInitialConversationItem();
             } else {

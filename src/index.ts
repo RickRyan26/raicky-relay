@@ -92,13 +92,22 @@ async function ensureBotParticipant(env: Env, conversationSid: string): Promise<
     );
     if (!exists) {
       const body = new URLSearchParams({
-        identity: BOT_IDENTITY,
+        Identity: BOT_IDENTITY,
         "MessagingBinding.ProjectedAddress": PROJECTED_ADDRESS,
       });
-      await twilioPost(env, `/Conversations/${conversationSid}/Participants`, body).catch(() => {});
+      const addRes = await twilioPost(env, `/Conversations/${conversationSid}/Participants`, body);
+      if (!addRes.ok) {
+        const txt = await addRes.text();
+        // If group already exists with same number group, treat as success
+        if (addRes.status === 409 && txt.includes('50438')) {
+          owrLog('[bot] group already exists; continuing');
+          return;
+        }
+        owrError('[bot] failed to add projected participant', txt);
+      }
     }
-  } catch {
-    // ignore
+  } catch (e) {
+    owrError('[bot] ensure participant error', e);
   }
 }
 
@@ -192,7 +201,7 @@ async function createConversationWithParticipants(
     // Add bot projected
     await ensureBotParticipant(env, ch);
     // Seed a hello message
-    await twilioPost(env, `/Conversations/${ch}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: `Hi! I’m the GateFrames AI assistant—happy to help here. Mention @ai when you want me to jump in.` }));
+    await twilioPost(env, `/Conversations/${ch}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: `Hi! I’m the "Gate Frames" AI assistant—happy to help here. Mention @ai when you want me to jump in.` }));
     return ch;
   } catch {
     return null;
@@ -328,12 +337,11 @@ async function handleTwilioConversationsWebhook(
 }
 
 function getInitialMessageForMode(options: { voicemailMode: boolean; callDirection: 'inbound' | 'outbound' | 'unknown' }): string {
-  const baseBrand = `I'm your GateFrames A.I. assistant.`;
+  const baseBrand = `Hello, this is the "Gate Frames" A.I. assistant.`;
   if (options.voicemailMode) {
     return (
-      `${baseBrand} I'm leaving a short voicemail now. ` +
-      `Sorry we missed you—please call back with any questions about GateFrames driveway gates, openers, or accessories. ` +
-      `Have a great day!`
+      `${baseBrand} Sorry we missed you. I'm leaving a short voicemail now. ` +
+      `If you have questions about "Gate Frames" driveway gates, openers, or accessories, please call back or reply to this text and I’ll help right away. Have a great day!`
     );
   }
   if (options.callDirection === 'inbound') {
@@ -354,7 +362,11 @@ function getSystemMessage(timeStamp: string): string {
 
     Objective: Understand the customer's needs, provide accurate information, and guide them to the perfect Gate Frames product or solution, driving sales and satisfaction.
 
-    Strict Scope: Your knowledge is limited to GateFrames products (driveway gates, fences, accessories, etc.). If asked about unrelated items or services, politely decline and steer the conversation back to GateFrames offerings.
+    Strict Scope: Your knowledge is limited to "Gate Frames" products (driveway gates, fences, accessories, etc.). If asked about unrelated items or services, politely decline and steer the conversation back to "Gate Frames" offerings.
+
+    Identity Rule (CRITICAL): At the beginning of EVERY response — including voicemails — you MUST clearly say: "This is the "Gate Frames" A.I. assistant." Do not skip this line.
+
+    Voicemail Rule (CRITICAL): When leaving a voicemail, keep it short, identify yourself as the "Gate Frames" A.I. assistant, state that we missed them, invite a call back or text reply, and do not ask questions.
 
     Knowledge: Gate Frames began from this simple promise. Design custom-sized automatic steel and wood gates and fences of the highest industry standard, deliver them directly to our fellow Americans for free, and offer enjoyable easy to follow Do-It-Yourself installation guides.
 

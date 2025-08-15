@@ -125,6 +125,22 @@ function parseCallNumbers(text: string): string[] {
   return numbers;
 }
 
+function parseGroupNumbers(text: string): string[] {
+  const idx = text.toLowerCase().indexOf("@group");
+  if (idx < 0) return [];
+  const after = text.slice(idx + 6);
+  const tokens = after
+    .split(/[\s,;]+/u)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+  const numbers: string[] = [];
+  for (const token of tokens) {
+    const clean = sanitizeUsNumber(token);
+    if (clean) numbers.push(clean);
+  }
+  return numbers;
+}
+
 async function placeOutboundCalls(env: Env, e164Targets: string[], voiceUrl: string): Promise<string[]> {
   const callSids: string[] = [];
   for (const e164 of e164Targets) {
@@ -133,31 +149,54 @@ async function placeOutboundCalls(env: Env, e164Targets: string[], voiceUrl: str
         To: e164,
         From: PROJECTED_ADDRESS,
         Url: voiceUrl,
-        Method: "GET",
-        MachineDetection: "DetectMessageEnd",
+        Method: 'GET',
+        MachineDetection: 'DetectMessageEnd'
       });
-      const res = await fetch(
-        `${TWILIO_API_BASE}/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: twilioAuthHeader(env),
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body,
-        }
-      );
+      const res = await fetch(`${TWILIO_API_BASE}/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, {
+        method: 'POST',
+        headers: { Authorization: twilioAuthHeader(env), 'Content-Type': 'application/x-www-form-urlencoded' },
+        body
+      });
       if (res.ok) {
         const json = (await res.json()) as { sid?: string };
         if (json.sid) callSids.push(json.sid);
       } else {
-        owrError("Failed to create call", await res.text());
+        owrError('Failed to create call', await res.text());
       }
     } catch (e) {
-      owrError("Failed to start outbound call to", e164, e);
+      owrError('Failed to start outbound call to', e164, e);
     }
   }
   return callSids;
+}
+
+async function createConversationWithParticipants(
+  env: Env,
+  addressesE164: string[],
+  friendlyName?: string
+): Promise<string | null> {
+  try {
+    const convRes = await fetch(`${TWILIO_CONV_BASE}/Conversations`, {
+      method: 'POST',
+      headers: { Authorization: twilioAuthHeader(env), 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(friendlyName ? { FriendlyName: friendlyName } : {})
+    });
+    if (!convRes.ok) return null;
+    const conv = (await convRes.json()) as { sid?: string };
+    const ch = conv.sid || null;
+    if (!ch) return null;
+    // Add SMS participants
+    for (const e164 of addressesE164) {
+      await twilioPost(env, `/Conversations/${ch}/Participants`, new URLSearchParams({ 'MessagingBinding.Address': e164 })).catch(() => {});
+    }
+    // Add bot projected
+    await ensureBotParticipant(env, ch);
+    // Seed a hello message
+    await twilioPost(env, `/Conversations/${ch}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: `Hi! I’m the GateFrames AI assistant—happy to help here. Mention @ai when you want me to jump in.` }));
+    return ch;
+  } catch {
+    return null;
+  }
 }
 
 async function handleTwilioConversationsWebhook(
@@ -175,12 +214,10 @@ async function handleTwilioConversationsWebhook(
 
   owrLog("[/twilio/convo]", { eventType, conversationSid, author, hasBody: Boolean(body) });
 
-  // Ack immediately; do the actual work in the background to avoid 5s timeouts
   const resp = new Response("ok", { status: 200 });
 
-  // Simple in-memory idempotency (best-effort in Workers)
   const now = Date.now();
-  // @ts-expect-error attach a map on globalThis to persist across requests in same isolate
+  // @ts-expect-error
   globalThis.__processed ||= new Map<string, number>();
   // @ts-expect-error
   const processed: Map<string, number> = globalThis.__processed;
@@ -195,7 +232,6 @@ async function handleTwilioConversationsWebhook(
         if (!conversationSid) return;
         if (eventType !== "onMessageAdded" && eventType !== "onConversationStateUpdated") return;
 
-        // If we got state-updated, fetch the most recent message to process
         if (eventType === 'onConversationStateUpdated') {
           try {
             const msgRes = await twilioGet(env, `/Conversations/${conversationSid}/Messages?PageSize=1`);
@@ -211,14 +247,13 @@ async function handleTwilioConversationsWebhook(
         if (!body) return;
         if (author === BOT_IDENTITY || author === "system") return;
 
-        // Idempotency check after we know the target message
         if (dedupeKey && processed.has(dedupeKey)) {
           owrLog('[dedupe] already processed', dedupeKey);
           return;
         }
         if (dedupeKey) processed.set(dedupeKey, now);
 
-        // @call handling (works for 1:1 or group)
+        // @call handling
         const callTargets = parseCallNumbers(body);
         if (callTargets.length > 0) {
           const e164Targets = callTargets.map((ten) => `+1${ten}`);
@@ -233,7 +268,21 @@ async function handleTwilioConversationsWebhook(
           return;
         }
 
-        // If group (2+ non-bot identities), require @ai mention
+        // @group handling: create a new group with the author and provided numbers
+        const groupTargets = parseGroupNumbers(body);
+        if (groupTargets.length > 0) {
+          const authorE164 = author.startsWith('+1') ? author : (author.startsWith('+') ? author : `+1${sanitizeUsNumber(author) || ''}`);
+          const othersE164 = groupTargets.map((ten) => `+1${ten}`);
+          const all = [authorE164, ...othersE164].filter(Boolean) as string[];
+          const ch = await createConversationWithParticipants(env, all, `GF Group ${new Date().toISOString()}`);
+          const ack = ch
+            ? `I created a new group and sent an intro message. You should see it as a new thread.`
+            : `Sorry, I couldn't create the group.`;
+          await twilioPost(env, `/Conversations/${conversationSid}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: ack }));
+          return;
+        }
+
+        // Group gating for @ai
         let isGroup = false;
         try {
           const partsRes = await twilioGet(env, `/Conversations/${conversationSid}/Participants`);
@@ -245,10 +294,9 @@ async function handleTwilioConversationsWebhook(
         } catch {}
         if (isGroup && !/(^|\s)@ai(\b|\s|:)/i.test(body)) return;
 
-        // Ensure bot projection exists
         await ensureBotParticipant(env, conversationSid);
 
-        // Call AI service
+        // AI reply
         const baseUrl = "https://www.gateframes.com";
         let reply = `Sorry, I'm currently under maintenance..`;
         try {
@@ -267,16 +315,10 @@ async function handleTwilioConversationsWebhook(
           }
         } catch {}
 
-        // Send reply to Conversation
-        const msgBody = new URLSearchParams({ Author: BOT_IDENTITY, Body: reply });
-        await twilioPost(env, `/Conversations/${conversationSid}/Messages`, msgBody);
+        await twilioPost(env, `/Conversations/${conversationSid}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: reply }));
       } catch (e) {
         try {
-          const fallback = new URLSearchParams({
-            Author: BOT_IDENTITY,
-            Body: `Sorry, I'm currently under maintenance...`,
-          });
-          await twilioPost(env, `/Conversations/${conversationSid}/Messages`, fallback);
+          await twilioPost(env, `/Conversations/${conversationSid}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: `Sorry, I'm currently under maintenance...` }));
         } catch {}
       }
     })()

@@ -5,21 +5,17 @@ export function buildInitialCallGreeting(options: {
   callDirection: "inbound" | "outbound" | "unknown";
 }): string {
   const greeting = `Hey there! This is the "${BRAND_NAME}" A.I. assistant.`;
-
   if (options.voicemailMode) {
-    return (
-      `${greeting} Sorry we missed you! Just dropping a quick voicemail. ` +
-      `If you've got questions about our gates, openers, or anything else, just call back or shoot us a text and I'll help right away`
-    );
+    return `leave a voicemail with "${greeting} Sorry I missed you! I'll just leave a quick voicemail. If you have any questions about our gates, openers, or anything else, just call back or shoot me a text and I'll help right away."`;
   }
 
   if (options.callDirection === "inbound") {
-    return `${greeting} Thanks for calling! How can I help you today?`;
+    return `Greet the user with "${greeting} Thanks for calling! How can I help you today?"`;
   }
   if (options.callDirection === "outbound") {
-    return `${greeting} I'm reaching out to help, what can I assist you with today?`;
+    return `Greet the user with "${greeting} I'm reaching out to help, what can I assist you with today?"`;
   }
-  return `${greeting} How can I help?`;
+  return `Greet the user with "${greeting} How can I help?"`;
 }
 
 export function chatPrompt(currentIsoTimestamp: string): string {

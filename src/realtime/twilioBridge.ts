@@ -79,8 +79,7 @@ export async function createTwilioRealtimeBridge(
   const directionParam = (
     reqUrl.searchParams.get("direction") || ""
   ).toLowerCase();
-  let systemInstructionsOverride: string | null = null;
-  let initialGreetingOverride: string | null = null;
+
   let voicemailMode = false;
   let callDirection: "inbound" | "outbound" | "unknown" = "unknown";
   const selectedVoice: VoiceName = (
@@ -189,7 +188,7 @@ export async function createTwilioRealtimeBridge(
   }
 
   function initializeSession() {
-    const fallbackInstructions = realtimeConcatPrompt(
+    const instructions = realtimeConcatPrompt(
       chatPrompt(new Date().toISOString())
     );
     const sessionUpdate = {
@@ -199,7 +198,7 @@ export async function createTwilioRealtimeBridge(
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         voice: selectedVoice,
-        instructions: systemInstructionsOverride ?? fallbackInstructions,
+        instructions,
         modalities: ["text", "audio"],
         temperature: 0.8,
       },
@@ -211,8 +210,10 @@ export async function createTwilioRealtimeBridge(
   function sendInitialConversationItem() {
     if (initialUserMessageSent) return;
     initialUserMessageSent = true;
-    const initialMessage = initialGreetingOverride ?? "";
-    if (!initialMessage) return;
+    const initialMessage = buildInitialCallGreeting({
+      voicemailMode,
+      callDirection,
+    });
 
     const initialConversationItem = {
       type: "conversation.item.create",
@@ -402,43 +403,10 @@ export async function createTwilioRealtimeBridge(
             rackyLog("[twilio] start.customParameters:", customParams);
             for (const p of customParams) {
               const key = (p.name || p.key || "").toLowerCase();
-              const rawValue = p.value || "";
-              const lowerValue = rawValue.toLowerCase();
               if (key === "amd") {
-                voicemailMode = lowerValue.includes("machine");
-              } else if (key === "direction") {
-                if (lowerValue === "inbound" || lowerValue === "outbound")
-                  callDirection = lowerValue as "inbound" | "outbound";
-              } else if (key === "sys") {
-                try {
-                  systemInstructionsOverride = decodeBase64UrlUtf8(rawValue);
-                } catch {
-                  systemInstructionsOverride = null;
-                }
-                if (systemInstructionsOverride != null) {
-                  try {
-                    if (realtimeClient?.isConnected()) {
-                      realtimeClient.realtime.send("session.update", {
-                        type: "session.update",
-                        session: { instructions: systemInstructionsOverride },
-                      });
-                    }
-                  } catch {}
-                }
-              } else if (key === "greet") {
-                try {
-                  initialGreetingOverride = decodeBase64UrlUtf8(rawValue);
-                } catch {
-                  initialGreetingOverride = null;
-                }
+                const value = (p.value || "").toLowerCase();
+                voicemailMode = value.includes("machine");
               }
-            }
-            if (!initialGreetingOverride) {
-              const greetText = buildInitialCallGreeting({
-                voicemailMode,
-                callDirection,
-              });
-              initialGreetingOverride = greetText;
             }
             if (realtimeClient?.isConnected()) sendInitialConversationItem();
             else shouldSendInitialOnConnect = true;
@@ -482,14 +450,6 @@ export async function createTwilioRealtimeBridge(
   });
 
   let shouldSendInitialOnConnect = false;
-  function decodeBase64UrlUtf8(raw: string): string {
-    const b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
-    const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
-    const bin = atob(b64 + pad);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
-  }
 
   ctx.waitUntil(
     (async () => {
@@ -508,7 +468,7 @@ export async function createTwilioRealtimeBridge(
 
         // If we have streamSid but haven't sent initial message yet, send it now
         // This ensures AI speaks immediately even if connection timing is off
-        if (streamSid && !initialUserMessageSent && initialGreetingOverride) {
+        if (streamSid && !initialUserMessageSent) {
           rackyLog("Forcing immediate initial greeting due to active stream");
           sendInitialConversationItem();
         }

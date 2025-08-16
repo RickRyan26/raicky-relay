@@ -13,7 +13,7 @@ export async function generateTextDirect(
       content: msg.parts.map((part) => part.text).join(""),
     }));
 
-    const model = "gpt-4o";
+    const model = "gpt-4.1";
 
     rackyLog("openaiMessages", JSON.stringify(openaiMessages, null, 2));
 

@@ -56,6 +56,9 @@ export async function createTwilioRealtimeBridge(
   env: Env,
   ctx: ExecutionContext
 ): Promise<Response> {
+  const connectionStart = Date.now();
+  rackyLog(`[timing] WebSocket connection initiated at ${new Date().toISOString()}`);
+  
   const webSocketPair = new WebSocketPair();
   const [clientSocket, serverSocket] = Object.values(webSocketPair);
   serverSocket.accept();
@@ -131,6 +134,7 @@ export async function createTwilioRealtimeBridge(
   let startEventProcessed = false;
   let voicemailCloseRequested = false;
   let alreadyClosed = false;
+  let greetingSent = false;
 
   let timeLimitTimer: ReturnType<typeof setTimeout> | null = null;
   let timeLimitClosing = false;
@@ -207,7 +211,8 @@ export async function createTwilioRealtimeBridge(
 
   let realtimeClient: RealtimeClient | null = null;
   try {
-    rackyLog("Creating OpenAIRealtimeClient (Twilio mode)");
+    const clientCreateTime = Date.now() - connectionStart;
+    rackyLog(`[timing] Creating OpenAIRealtimeClient (Twilio mode) at +${clientCreateTime}ms`);
     realtimeClient = new RealtimeClient({
       apiKey,
       debug: false,
@@ -248,9 +253,10 @@ export async function createTwilioRealtimeBridge(
   function sendInitialConversationItem() {
     if (initialUserMessageSent) return;
     initialUserMessageSent = true;
+    const greetingTime = Date.now() - connectionStart;
     const timestamp = new Date().toISOString();
     rackyLog(
-      `[twilio] Creating initial greeting at ${timestamp} with voicemailMode: ${voicemailMode}, callDirection: ${callDirection}`
+      `[timing] Sending initial greeting at +${greetingTime}ms (${timestamp}) with voicemailMode: ${voicemailMode}, callDirection: ${callDirection}`
     );
     const initialMessage = buildInitialCallGreeting({
       voicemailMode,
@@ -273,8 +279,10 @@ export async function createTwilioRealtimeBridge(
       type: "response.create",
     });
 
+    const greetingSentTime = Date.now() - connectionStart;
+    greetingSent = true;
     rackyLog(
-      `Sent initial conversation item (voicemailMode: ${voicemailMode}):`,
+      `[timing] Initial greeting sent at +${greetingSentTime}ms (voicemailMode: ${voicemailMode}):`,
       initialMessage
     );
   }
@@ -398,8 +406,9 @@ export async function createTwilioRealtimeBridge(
   });
 
   realtimeClient.realtime.on("close", (metadata: { error: boolean }) => {
+    const closeTime = Date.now() - connectionStart;
     rackyLog(
-      `Closing server-side (Twilio mode) because I received a close event: (error: ${metadata.error})`
+      `[timing] OpenAI close event received at +${closeTime}ms (error: ${metadata.error}) - closing server-side (Twilio mode)`
     );
     try {
       serverSocket.close();
@@ -432,6 +441,9 @@ export async function createTwilioRealtimeBridge(
         }
         case "start": {
           if (isStartEvent(twilioEvent)) {
+            const startEventTime = Date.now() - connectionStart;
+            rackyLog(`[timing] Start event received at +${startEventTime}ms`);
+            
             streamSid = twilioEvent.start?.streamSid ?? null;
             const rawCustomParams =
               (twilioEvent.start?.customParameters as unknown) ??
@@ -534,10 +546,27 @@ export async function createTwilioRealtimeBridge(
           break;
         }
         default: {
+          const eventTime = Date.now() - connectionStart;
+          const eventType = (twilioEvent as TwilioBaseEvent).event;
           rackyLog(
-            "Received non-media Twilio event:",
-            (twilioEvent as TwilioBaseEvent).event
+            `[timing] Received non-media Twilio event at +${eventTime}ms: ${eventType}`
           );
+          if (eventType === "connected") {
+            rackyLog(`[timing] CONNECTED event received at +${eventTime}ms - Twilio WebSocket established`);
+          } else if (eventType === "stop") {
+            // Ignore stop events that come too early - before we've had a chance to establish the call
+            const tooEarly = eventTime < 2000; // Less than 2 seconds
+            const beforeGreeting = !greetingSent;
+            
+            rackyLog(`[timing] STOP event received at +${eventTime}ms - greetingSent: ${greetingSent}, tooEarly: ${tooEarly}`);
+            
+            if (tooEarly && beforeGreeting) {
+              rackyLog(`[timing] IGNORING early STOP event at +${eventTime}ms - likely spurious Twilio event`);
+              return; // Don't process this stop event
+            } else {
+              rackyLog(`[timing] Processing STOP event at +${eventTime}ms - this will cause closure`);
+            }
+          }
           break;
         }
       }
@@ -547,10 +576,11 @@ export async function createTwilioRealtimeBridge(
   });
 
   serverSocket.addEventListener("close", () => {
+    const closeTime = Date.now() - connectionStart;
+    rackyLog(`[timing] Twilio client disconnected at +${closeTime}ms`);
     try {
       if (realtimeClient?.isConnected()) realtimeClient.disconnect();
     } catch {}
-    rackyLog("Twilio client disconnected.");
     try {
       if (timeLimitTimer) clearTimeout(timeLimitTimer);
     } catch {}
@@ -564,10 +594,12 @@ export async function createTwilioRealtimeBridge(
   ctx.waitUntil(
     (async () => {
       try {
-        rackyLog(`Connecting to OpenAI (Twilio mode)...`);
+        const connectStartTime = Date.now() - connectionStart;
+        rackyLog(`[timing] Connecting to OpenAI (Twilio mode) at +${connectStartTime}ms...`);
         // @ts-expect-error Waiting on sdk types
         await realtimeClient!.connect({ model: MODEL });
-        rackyLog(`Connected to OpenAI successfully (Twilio mode)!`);
+        const connectEndTime = Date.now() - connectionStart;
+        rackyLog(`[timing] Connected to OpenAI successfully (Twilio mode) at +${connectEndTime}ms!`);
         initializeSession();
 
         // Send initial conversation item immediately if needed

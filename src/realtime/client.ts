@@ -1,8 +1,13 @@
 import { RealtimeClient } from "@openai/realtime-api-beta";
+import {
+  FINAL_TIME_LIMIT_MESSAGE,
+  MODEL,
+  OPENAI_URL,
+  TIME_LIMIT_MS,
+} from "../config/config";
 import type { Env } from "../config/env";
-import { LOG_EVENT_TYPES, MODEL, OPENAI_URL, SHOW_TIMING_MATH, TIME_LIMIT_MS, FINAL_TIME_LIMIT_MESSAGE } from "../config/config";
-import { rackyError, rackyLog } from "../utils/log";
 import { getAuthToken, validateAuth } from "../utils/auth";
+import { rackyError, rackyLog } from "../utils/log";
 
 export async function createRealtimeClient(
   request: Request,
@@ -41,30 +46,48 @@ export async function createRealtimeClient(
 
   try {
     rackyLog("Creating OpenAIRealtimeClient");
-    realtimeClient = new RealtimeClient({ apiKey, debug: true, url: OPENAI_URL });
+    realtimeClient = new RealtimeClient({
+      apiKey,
+      debug: true,
+      url: OPENAI_URL,
+    });
   } catch (e) {
     rackyError("Error creating OpenAI RealtimeClient", e);
     serverSocket.close();
-    return new Response("Error creating OpenAI RealtimeClient", { status: 500 });
+    return new Response("Error creating OpenAI RealtimeClient", {
+      status: 500,
+    });
   }
 
   const endClientDueToTimeLimit = () => {
     try {
       serverSocket.send(
-        JSON.stringify({ type: "system.time_limit", message: FINAL_TIME_LIMIT_MESSAGE })
+        JSON.stringify({
+          type: "system.time_limit",
+          message: FINAL_TIME_LIMIT_MESSAGE,
+        })
       );
     } catch {}
-    try { serverSocket.close(4000, "time_limit"); } catch {}
-    try { realtimeClient?.disconnect(); } catch {}
+    try {
+      serverSocket.close(4000, "time_limit");
+    } catch {}
+    try {
+      realtimeClient?.disconnect();
+    } catch {}
   };
-  const clientTimeLimitTimer = setTimeout(endClientDueToTimeLimit, TIME_LIMIT_MS);
+  const clientTimeLimitTimer = setTimeout(
+    endClientDueToTimeLimit,
+    TIME_LIMIT_MS
+  );
 
   realtimeClient.realtime.on("server.*", (event: { type: string }) => {
     serverSocket.send(JSON.stringify(event));
   });
 
   realtimeClient.realtime.on("close", (metadata: { error: boolean }) => {
-    rackyLog(`Closing server-side because I received a close event: (error: ${metadata.error})`);
+    rackyLog(
+      `Closing server-side because I received a close event: (error: ${metadata.error})`
+    );
     serverSocket.close();
   });
 
@@ -79,7 +102,8 @@ export async function createRealtimeClient(
   };
 
   serverSocket.addEventListener("message", (event: MessageEvent) => {
-    const data = typeof event.data === "string" ? event.data : event.data.toString();
+    const data =
+      typeof event.data === "string" ? event.data : event.data.toString();
     if (!realtimeClient.isConnected()) {
       messageQueue.push(data);
     } else {
@@ -88,10 +112,14 @@ export async function createRealtimeClient(
   });
 
   serverSocket.addEventListener("close", ({ code, reason }) => {
-    rackyLog(`Closing server-side because the client closed the connection: ${code} ${reason}`);
+    rackyLog(
+      `Closing server-side because the client closed the connection: ${code} ${reason}`
+    );
     realtimeClient.disconnect();
     messageQueue.length = 0;
-    try { clearTimeout(clientTimeLimitTimer); } catch {}
+    try {
+      clearTimeout(clientTimeLimitTimer);
+    } catch {}
   });
 
   let model: string | undefined = MODEL;
@@ -109,12 +137,16 @@ export async function createRealtimeClient(
         }
       } catch (e) {
         rackyError("Error connecting to OpenAI", e);
-        try { serverSocket.close(1011, "Upstream connect failure"); } catch {}
+        try {
+          serverSocket.close(1011, "Upstream connect failure");
+        } catch {}
       }
     })()
   );
 
-  return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
+  return new Response(null, {
+    status: 101,
+    headers: responseHeaders,
+    webSocket: clientSocket,
+  });
 }
-
-

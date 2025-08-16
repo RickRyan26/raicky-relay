@@ -128,7 +128,6 @@ export async function createTwilioRealtimeBridge(
   let markQueue: string[] = [];
   let responseStartTimestampTwilio: number | null = null;
   let speechDetected = false;
-  let deferInitialForOutbound = false;
   let startEventProcessed = false;
   let voicemailCloseRequested = false;
   let alreadyClosed = false;
@@ -249,8 +248,9 @@ export async function createTwilioRealtimeBridge(
   function sendInitialConversationItem() {
     if (initialUserMessageSent) return;
     initialUserMessageSent = true;
+    const timestamp = new Date().toISOString();
     rackyLog(
-      `[twilio] Creating initial greeting with voicemailMode: ${voicemailMode}, callDirection: ${callDirection}`
+      `[twilio] Creating initial greeting at ${timestamp} with voicemailMode: ${voicemailMode}, callDirection: ${callDirection}`
     );
     const initialMessage = buildInitialCallGreeting({
       voicemailMode,
@@ -317,11 +317,6 @@ export async function createTwilioRealtimeBridge(
       lastAssistantItem = null;
       responseStartTimestampTwilio = null;
     }
-    if (deferInitialForOutbound && !initialUserMessageSent) {
-      // We waited for human; send greeting now
-      deferInitialForOutbound = false;
-      sendInitialConversationItem();
-    }
   }
 
   realtimeClient.realtime.on("server.*", (evt: { type: string }) => {
@@ -349,17 +344,6 @@ export async function createTwilioRealtimeBridge(
       if (evt.type === "input_audio_buffer.speech_started") {
         speechDetected = true;
         if (!voicemailMode) handleSpeechStartedEvent();
-        // If we deferred for outbound waiting for speech (human), don't send normal greeting
-        // if voicemailMode is already true or AMD unknown. We only send normal greeting when
-        // voicemailMode is false and we explicitly decided to wait for speech.
-        if (
-          deferInitialForOutbound &&
-          !initialUserMessageSent &&
-          voicemailMode
-        ) {
-          // Do nothing; voicemail path will be handled by fallback timer
-          return;
-        }
       }
       if (voicemailMode && evt.type === "response.done") {
         // For voicemail we close after audio drains only
@@ -525,37 +509,16 @@ export async function createTwilioRealtimeBridge(
               rackyError("[twilio] Failed to process customParameters", e);
             }
             startEventProcessed = true;
-            // Decide when to send the initial greeting based on direction and AMD
-            if (callDirection === "outbound") {
-              if (voicemailMode) {
-                if (realtimeClient?.isConnected()) {
-                  setTimeout(() => sendInitialConversationItem(), 50);
-                } else {
-                  shouldSendInitialOnConnect = true;
-                }
-              } else {
-                // Mirror inbound: immediately send normal greeting
-                if (realtimeClient?.isConnected()) {
-                  setTimeout(() => sendInitialConversationItem(), 100);
-                } else {
-                  shouldSendInitialOnConnect = true;
-                }
-              }
+            rackyLog(
+              `[twilio] Start event processed - Direction: ${callDirection}, VoicemailMode: ${voicemailMode}, Sending greeting immediately`
+            );
+            // Always send initial greeting immediately for both inbound and outbound calls
+            // If it's a voicemail, we can adjust after detection
+            if (realtimeClient?.isConnected()) {
+              // Send immediately with minimal delay
+              setTimeout(() => sendInitialConversationItem(), 50);
             } else {
-              // Inbound or unknown: if AMD says machine, send voicemail, else normal greeting
-              if (voicemailMode) {
-                if (realtimeClient?.isConnected()) {
-                  setTimeout(() => sendInitialConversationItem(), 50);
-                } else {
-                  shouldSendInitialOnConnect = true;
-                }
-              } else {
-                if (realtimeClient?.isConnected()) {
-                  setTimeout(() => sendInitialConversationItem(), 100);
-                } else {
-                  shouldSendInitialOnConnect = true;
-                }
-              }
+              shouldSendInitialOnConnect = true;
             }
           }
           responseStartTimestampTwilio = null;

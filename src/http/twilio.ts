@@ -6,6 +6,9 @@ export async function handleTwilioVoiceWebhook(
   request: Request,
   env: Env
 ): Promise<Response> {
+  const webhookStartTime = Date.now();
+  console.log(`[timing] Twilio webhook called at ${new Date().toISOString()}`);
+  
   const url = new URL(request.url);
   const token = await generateRelayAuthToken(env, "twilio");
   const wssOrigin = `wss://${url.host}`;
@@ -13,11 +16,19 @@ export async function handleTwilioVoiceWebhook(
 
   let answeredBy: string | null = null;
   let direction: "inbound" | "outbound" | "unknown" = "unknown";
+  let machineDetectionDuration: string | null = null;
+  let callStatus: string | null = null;
+  
   if (request.method === "POST") {
     try {
       const form = await request.formData();
       const ab = form.get("AnsweredBy");
       answeredBy = typeof ab === "string" ? ab.toLowerCase() : null;
+      
+      // Extract additional timing information
+      machineDetectionDuration = form.get("MachineDetectionDuration") as string || null;
+      callStatus = form.get("CallStatus") as string || null;
+      
       const from =
         typeof form.get("From") === "string"
           ? (form.get("From") as string)
@@ -36,6 +47,11 @@ export async function handleTwilioVoiceWebhook(
   } else {
     const answeredByParam = url.searchParams.get("AnsweredBy");
     answeredBy = answeredByParam ? answeredByParam.toLowerCase() : null;
+    
+    // Extract additional timing information from GET params
+    machineDetectionDuration = url.searchParams.get("MachineDetectionDuration");
+    callStatus = url.searchParams.get("CallStatus");
+    
     const dirParam =
       url.searchParams.get("Direction") ||
       url.searchParams.get("CallDirection") ||
@@ -53,10 +69,22 @@ export async function handleTwilioVoiceWebhook(
   // Also include AMD on the WS URL so the bridge can read it immediately
   relayUrl += `&amd=${encodeURIComponent(amdValue)}`;
   
-  // Debug logging to see what AMD values we're getting
+  // Enhanced debug logging with timing information
+  const webhookProcessTime = Date.now() - webhookStartTime;
+  console.log(`[timing] Webhook processed in ${webhookProcessTime}ms`);
   console.log(`[twilio-webhook] AnsweredBy: "${answeredBy}", AMD value: "${amdValue}", Direction: "${direction}"`);
+  
+  if (machineDetectionDuration) {
+    console.log(`[timing] MachineDetectionDuration: ${machineDetectionDuration}ms`);
+  }
+  if (callStatus) {
+    console.log(`[twilio-webhook] CallStatus: "${callStatus}"`);
+  }
   
   const twiml = buildTwimlConnectStream(relayUrl, { amd: amdValue, direction });
 
+  const totalTime = Date.now() - webhookStartTime;
+  console.log(`[timing] Webhook response ready in ${totalTime}ms`);
+  
   return new Response(twiml, { headers: { "Content-Type": "text/xml" } });
 }

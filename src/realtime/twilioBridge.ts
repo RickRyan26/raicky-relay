@@ -534,8 +534,12 @@ export async function createTwilioRealtimeBridge(
                   shouldSendInitialOnConnect = true;
                 }
               } else {
-                // No fallbacks: wait for human speech only
-                deferInitialForOutbound = true;
+                // Mirror inbound: immediately send normal greeting
+                if (realtimeClient?.isConnected()) {
+                  setTimeout(() => sendInitialConversationItem(), 100);
+                } else {
+                  shouldSendInitialOnConnect = true;
+                }
               }
             } else {
               // Inbound or unknown: if AMD says machine, send voicemail, else normal greeting

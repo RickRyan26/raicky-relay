@@ -1,55 +1,55 @@
-# Racky Relay Server
+# Raicky Relay Server
 
-Cloudflare Worker that:
-- Bridges client WebSocket to OpenAI Realtime API.
-- Bridges Twilio Media Streams to OpenAI Realtime (voice assistant, voicemail mode, barge-in).
-- Handles Twilio Conversations webhooks for SMS group chats and command helpers.
-- Enforces short‑lived auth tokens and origin checks.
-- Applies simple in‑memory rate limits.
+Cloudflare Worker for GateFrames that:
+- Bridges client WebSocket to OpenAI Realtime (voice assistant, voicemail mode, barge‑in)
+- Bridges Twilio Media Streams (voice) to OpenAI Realtime
+- Handles Twilio Conversations webhooks for SMS (1:1 + Group MMS) and helper commands
+- Enforces short‑lived auth tokens, origin checks, and simple rate limits
 
-### Features
-- Client WS relay: validates short‑lived AES‑GCM token (origin "client") via `/token/<b64url>`, `/auth/<b64url>`, or `?auth=` before opening relay.
-- Twilio WS bridge: detects Twilio via `mode=twilio` or headers; bypasses Origin checks; configures session with `g711_ulaw`, server VAD, voice (default `ash`), text+audio.
-  - Uses custom params: `amd` (voicemail detection) and `direction` (`inbound`/`outbound`) to tailor the initial prompt.
-  - Voicemail mode: send short voicemail then end the stream.
-  - Barge‑in: truncates assistant audio when caller speaks.
-- Twilio Conversations webhook (`/twilio/convo`):
-  - Ensures bot participant `gateframes-bot` with projected address `+14082605145`.
-  - `@call 4155550000, ...`: places outbound calls via Twilio Voice to `https://www.gateframes.com/api/twilio/voice`.
-  - `@group 4155550000, ...`: creates a new group with author + numbers and seeds an intro.
-  - Group gating: in multi‑party chats, the bot replies only if `@ai` is present.
-  - AI reply generated directly via OpenAI API (no HTTP round-trip).
-  - Dedupe by `MessageSid` or `ConversationSid:MessageIndex` for ~10 minutes.
-- Origin allowlist for non‑Twilio WS: `https://www.gateframes.com`, `https://gateframes.com`, `https://www.ricslist.com`, `https://ricslist.com`, and any `http://localhost:<port>`.
+## Features
+- WS relay (client): validates short‑lived AES‑GCM token via `/token/<b64url>`, `/auth/<b64url>`, or `?auth=` before upgrading
+- Twilio WS bridge (voice): `?mode=twilio` connects; configures `g711_ulaw`, server VAD, voice; voicemail mode ends after a short message; barge‑in truncates audio
+- Conversations webhook (`POST /twilio/convo`):
+  - Ensures bot participant `gateframes-bot` with projected `+14082605145`
+  - `@ai …`: replies in groups only when mentioned; 1:1 always replies
+  - `@call 4155550000 …`: places outbound calls and acknowledges
+  - `@group 4155550000 …`: creates a new group with the author + numbers and seeds an intro
+  - Uses Twilio conversation history for model context (remembers prior turns)
+  - Idempotency: drops duplicates by `MessageSid` or `ConversationSid:MessageIndex`
+- Origin allowlist for non‑Twilio WS: GateFrames domains and localhost
+- In‑memory rate limits (per IP / per conversation)
 
-### Rate limits (in‑memory, per‑instance)
-- Realtime connections end politely after 10 minutes.
-- HTTP (per IP): **60 requests / minute** → `429` with `Retry-After`.
-- WebSocket upgrades, non‑Twilio (per IP): **10 / minute** → `429` with `Retry-After`.
-- Twilio Conversations (per conversation): **12 events / 30s** → silently ignored (returns `200 ok`).
-Notes: simple token bucket stored in `globalThis`; ephemeral across deploys/instances; periodic pruning to avoid growth.
+## Endpoints
+- `POST /twilio/convo` — Twilio Conversations post‑webhook (enable onMessageAdded + onConversationStateUpdated)
+- `GET|POST /twilio/voice` — Twilio Voice webhook; returns TwiML with a wss:// Stream to this Worker
+- `WS anypath?mode=twilio` — Twilio media stream bridge (no Origin required)
+- Client WS relay on any other upgrade path (requires short‑lived token and allowed Origin)
 
-### Endpoints & behavior
-- WebSocket (client relay): upgrade to WS on any path; requires valid token and allowed Origin.
-- WebSocket (Twilio bridge): `?mode=twilio` (or Twilio headers) connects to the bridge; Origin not required.
-- HTTP:
-  - `POST /twilio/convo` — Twilio Conversations webhook.
-  - `/token/<b64url>` or `/auth/<b64url>` — HTTP `200 OK` (useful for health pings); tokens are enforced only on WS upgrades.
-  - Others: `426 Expected Upgrade` if not a WS.
-
-### Configuration
-Env vars (set as Wrangler secrets where applicable):
+## Configuration
+Set secrets:
 ```sh
 npx wrangler secret put OPENAI_API_KEY
 npx wrangler secret put ENCRYPTION_KEY
 npx wrangler secret put TWILIO_ACCOUNT_SID
 npx wrangler secret put TWILIO_AUTH_TOKEN
+# optional: chat model (defaults to your choice in code)
+npx wrangler secret put OPENAI_CHAT_MODEL
 ```
-Other constants (edit in `src/index.ts` if needed): model (`gpt-4o-realtime-preview`), allowed voices, bot identity, projected address, allowed origins.
+Twilio webhook URLs (POST):
+- Conversations Service + Address Post‑Event URL: `https://<your-worker>.workers.dev/twilio/convo`
+  - Filters: onMessageAdded, onConversationStateUpdated
+- Voice webhook: `https://<your-worker>.workers.dev/twilio/voice` (TwiML responds with `wss://<your-worker>/token/<token>?mode=twilio`)
 
-### Develop locally
-Run the worker and connect your client:
-- `npm start` → connect to `ws://localhost:8787` (client WS) or `ws://localhost:8787/?mode=twilio` (Twilio bridge).
+## Models & prompts
+- Chat (SMS): uses OpenAI Chat Completions with your configured model (e.g., `gpt-5`)
+- Realtime (voice): model & voice set in `src/config/config.ts` (default realtime: `gpt-4o-realtime-preview`)
+- Prompts enforce identity and voicemail rules (every response begins with: “This is the GateFrames A.I. assistant.”)
 
-### Deploy to production
-`npm run deploy`, then connect to `wss://<worker>.<account>.workers.dev` (or your routed domain as configured in `wrangler.toml`).
+## Notes
+- Group MMS requires US/CA +1 long codes; iMessage must be off; Android group MMS on (Twilio canonicalizes identical participant sets)
+- A2P 10DLC registration is required for SMS delivery at scale
+- Webhooks must return 2xx quickly (we ack immediately and process async)
+
+## Develop & Deploy
+- Dev: `npm start` → `ws://localhost:8787`
+- Deploy: `npm run deploy` → `wss://<worker>.<account>.workers.dev`

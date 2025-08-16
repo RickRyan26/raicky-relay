@@ -628,6 +628,14 @@ export async function createTwilioRealtimeBridge(
         rackyLog(`Connected to OpenAI successfully (Twilio mode)!`);
         initializeSession();
 
+        // Outbound immediate start: if not voicemail, begin speaking right away,
+        // even if Twilio start hasn't arrived yet. Audio will buffer and flush on start.
+        if (callDirection === "outbound" && !voicemailMode && !initialUserMessageSent) {
+          try {
+            sendInitialConversationItem();
+          } catch {}
+        }
+
         // Send initial conversation item immediately if needed
         if (shouldSendInitialOnConnect) {
           sendInitialConversationItem();

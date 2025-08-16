@@ -347,6 +347,13 @@ export async function createTwilioRealtimeBridge(
       if (evt.type === "input_audio_buffer.speech_started") {
         speechDetected = true;
         if (!voicemailMode) handleSpeechStartedEvent();
+        // If we deferred for outbound waiting for speech (human), don't send normal greeting
+        // if voicemailMode is already true or AMD unknown. We only send normal greeting when
+        // voicemailMode is false and we explicitly decided to wait for speech.
+        if (deferInitialForOutbound && !initialUserMessageSent && voicemailMode) {
+          // Do nothing; voicemail path will be handled by fallback timer
+          return;
+        }
       }
       if (voicemailMode && evt.type === "response.done") {
         try {
@@ -470,6 +477,15 @@ export async function createTwilioRealtimeBridge(
                       `[twilio] AMD parameter detected - value: "${value}", voicemailMode changed from ${oldVoicemailMode} to ${voicemailMode}`
                     );
                   }
+                  if (key === "direction") {
+                    const oldDirection = callDirection;
+                    if (value === "inbound" || value === "outbound") {
+                      callDirection = value as typeof callDirection;
+                    }
+                    rackyLog(
+                      `[twilio] Direction parameter detected - value: "${value}", callDirection changed from ${oldDirection} to ${callDirection}`
+                    );
+                  }
                 }
               } else if (rawCustomParams && typeof rawCustomParams === "object") {
                 for (const [k, v] of Object.entries(
@@ -492,6 +508,15 @@ export async function createTwilioRealtimeBridge(
                       `[twilio] AMD parameter detected - value: "${value}", voicemailMode changed from ${oldVoicemailMode} to ${voicemailMode}`
                     );
                   }
+                  if (key === "direction") {
+                    const oldDirection = callDirection;
+                    if (value === "inbound" || value === "outbound") {
+                      callDirection = value as typeof callDirection;
+                    }
+                    rackyLog(
+                      `[twilio] Direction parameter detected - value: "${value}", callDirection changed from ${oldDirection} to ${callDirection}`
+                    );
+                  }
                 }
               }
             } catch (e) {
@@ -512,11 +537,19 @@ export async function createTwilioRealtimeBridge(
                 scheduleOutboundVoicemailFallback();
               }
             } else {
-              // Inbound or unknown: send normal greeting shortly
-              if (realtimeClient?.isConnected()) {
-                setTimeout(() => sendInitialConversationItem(), 100);
+              // Inbound or unknown: if AMD says machine, send voicemail, else normal greeting
+              if (voicemailMode) {
+                if (realtimeClient?.isConnected()) {
+                  setTimeout(() => sendInitialConversationItem(), 50);
+                } else {
+                  shouldSendInitialOnConnect = true;
+                }
               } else {
-                shouldSendInitialOnConnect = true;
+                if (realtimeClient?.isConnected()) {
+                  setTimeout(() => sendInitialConversationItem(), 100);
+                } else {
+                  shouldSendInitialOnConnect = true;
+                }
               }
             }
           }

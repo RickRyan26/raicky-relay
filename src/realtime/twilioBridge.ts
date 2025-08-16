@@ -131,6 +131,7 @@ export async function createTwilioRealtimeBridge(
   let deferInitialForOutbound = false;
   let outboundVoicemailTimer: ReturnType<typeof setTimeout> | null = null;
   const OUTBOUND_VOICEMAIL_WAIT_MS = 8000;
+  let startEventProcessed = false;
 
   let timeLimitTimer: ReturnType<typeof setTimeout> | null = null;
   let timeLimitClosing = false;
@@ -313,6 +314,12 @@ export async function createTwilioRealtimeBridge(
       lastAssistantItem = null;
       responseStartTimestampTwilio = null;
     }
+    if (deferInitialForOutbound && !initialUserMessageSent) {
+      // We waited for human; send greeting now
+      deferInitialForOutbound = false;
+      clearOutboundTimer();
+      sendInitialConversationItem();
+    }
   }
 
   realtimeClient.realtime.on("server.*", (evt: { type: string }) => {
@@ -438,40 +445,79 @@ export async function createTwilioRealtimeBridge(
         case "start": {
           if (isStartEvent(twilioEvent)) {
             streamSid = twilioEvent.start?.streamSid ?? null;
-            const customParams =
-              twilioEvent.start?.customParameters ||
-              twilioEvent.start?.custom_parameters ||
-              [];
-            rackyLog("[twilio] start.customParameters:", customParams);
-            for (const p of customParams) {
-              const key = (p.name || p.key || "").toLowerCase();
-              const value = (p.value || "").toLowerCase();
-              rackyLog(
-                `[twilio] Processing parameter - key: "${key}", value: "${value}"`
-              );
-              if (key === "amd") {
-                const oldVoicemailMode = voicemailMode;
-                // Check for various machine/voicemail indicators
-                voicemailMode =
-                  value.includes("machine") ||
-                  value === "machine_start" ||
-                  value === "machine_end_beep" ||
-                  value === "machine_end_silence" ||
-                  value === "machine_end_other";
-                rackyLog(
-                  `[twilio] AMD parameter detected - value: "${value}", voicemailMode changed from ${oldVoicemailMode} to ${voicemailMode}`
-                );
+            const rawCustomParams =
+              (twilioEvent.start?.customParameters as unknown) ??
+              (twilioEvent.start?.custom_parameters as unknown) ??
+              null;
+            rackyLog("[twilio] start.customParameters:", rawCustomParams);
+            try {
+              if (Array.isArray(rawCustomParams)) {
+                for (const p of rawCustomParams) {
+                  const key = ((p?.name ?? p?.key ?? "") as string).toLowerCase();
+                  const value = ((p?.value ?? "") as string).toLowerCase();
+                  rackyLog(
+                    `[twilio] Processing parameter - key: "${key}", value: "${value}"`
+                  );
+                  if (key === "amd") {
+                    const oldVoicemailMode = voicemailMode;
+                    voicemailMode =
+                      value.includes("machine") ||
+                      value === "machine_start" ||
+                      value === "machine_end_beep" ||
+                      value === "machine_end_silence" ||
+                      value === "machine_end_other";
+                    rackyLog(
+                      `[twilio] AMD parameter detected - value: "${value}", voicemailMode changed from ${oldVoicemailMode} to ${voicemailMode}`
+                    );
+                  }
+                }
+              } else if (rawCustomParams && typeof rawCustomParams === "object") {
+                for (const [k, v] of Object.entries(
+                  rawCustomParams as Record<string, unknown>
+                )) {
+                  const key = (k || "").toLowerCase();
+                  const value = String(v ?? "").toLowerCase();
+                  rackyLog(
+                    `[twilio] Processing parameter - key: "${key}", value: "${value}"`
+                  );
+                  if (key === "amd") {
+                    const oldVoicemailMode = voicemailMode;
+                    voicemailMode =
+                      value.includes("machine") ||
+                      value === "machine_start" ||
+                      value === "machine_end_beep" ||
+                      value === "machine_end_silence" ||
+                      value === "machine_end_other";
+                    rackyLog(
+                      `[twilio] AMD parameter detected - value: "${value}", voicemailMode changed from ${oldVoicemailMode} to ${voicemailMode}`
+                    );
+                  }
+                }
               }
+            } catch (e) {
+              rackyError("[twilio] Failed to process customParameters", e);
             }
-            // Always defer sending initial message to ensure AMD processing is complete
-            if (realtimeClient?.isConnected()) {
-              // Small delay to ensure AMD processing is complete
-              setTimeout(() => sendInitialConversationItem(), 100);
-            } else {
-              shouldSendInitialOnConnect = true;
-            }
+            startEventProcessed = true;
+            // Decide when to send the initial greeting based on direction and AMD
             if (callDirection === "outbound") {
-              scheduleOutboundVoicemailFallback();
+              if (voicemailMode) {
+                if (realtimeClient?.isConnected()) {
+                  setTimeout(() => sendInitialConversationItem(), 50);
+                } else {
+                  shouldSendInitialOnConnect = true;
+                }
+              } else {
+                // Wait for human speech; fallback to voicemail after timeout
+                deferInitialForOutbound = true;
+                scheduleOutboundVoicemailFallback();
+              }
+            } else {
+              // Inbound or unknown: send normal greeting shortly
+              if (realtimeClient?.isConnected()) {
+                setTimeout(() => sendInitialConversationItem(), 100);
+              } else {
+                shouldSendInitialOnConnect = true;
+              }
             }
           }
           responseStartTimestampTwilio = null;
@@ -529,12 +575,9 @@ export async function createTwilioRealtimeBridge(
           shouldSendInitialOnConnect = false;
         }
 
-        // If we have streamSid but haven't sent initial message yet, send it now
-        // This ensures AI speaks immediately even if connection timing is off
-        if (streamSid && !initialUserMessageSent) {
-          rackyLog("Forcing immediate initial greeting due to active stream");
-          sendInitialConversationItem();
-        }
+        // Do NOT force the initial greeting before we see the Twilio start event.
+        // We need the start event to process custom parameters (including AMD)
+        // so the greeting respects voicemail mode.
         while (twilioQueue.length) {
           const msg = twilioQueue.shift();
           if (!msg) continue;

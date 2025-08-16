@@ -104,8 +104,7 @@ export async function placeOutboundCalls(env: Env, e164Targets: string[], voiceU
         From: PROJECTED_ADDRESS,
         Url: voiceUrl,
         Method: 'GET',
-        // Start speaking immediately; do not block the bridge waiting on AMD
-        MachineDetection: 'Enable'
+        MachineDetection: 'DetectMessageEnd'
       });
       const res = await fetch(`${TWILIO_API_BASE}/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, {
         method: 'POST',

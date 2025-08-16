@@ -132,6 +132,9 @@ export async function createTwilioRealtimeBridge(
   let outboundVoicemailTimer: ReturnType<typeof setTimeout> | null = null;
   const OUTBOUND_VOICEMAIL_WAIT_MS = 8000;
   let startEventProcessed = false;
+  let voicemailCloseRequested = false;
+  let voicemailCloseTimeout: ReturnType<typeof setTimeout> | null = null;
+  let alreadyClosed = false;
 
   let timeLimitTimer: ReturnType<typeof setTimeout> | null = null;
   let timeLimitClosing = false;
@@ -179,6 +182,36 @@ export async function createTwilioRealtimeBridge(
         sendFinalAndClose();
       }, TIME_LIMIT_MS);
     } catch {}
+  }
+
+  function tryCloseVoicemailAfterDrain(reason: string) {
+    if (alreadyClosed) return;
+    // Close only when Twilio has acked all marks (audio drained), or after a short fallback
+    const doClose = () => {
+      if (alreadyClosed) return;
+      alreadyClosed = true;
+      try {
+        serverSocket.close(1000, reason);
+      } catch {}
+      try {
+        realtimeClient?.disconnect();
+      } catch {}
+    };
+    if (markQueue.length === 0) {
+      // Give Twilio a moment to flush playback
+      try {
+        setTimeout(doClose, 500);
+      } catch {
+        doClose();
+      }
+      return;
+    }
+    try {
+      if (voicemailCloseTimeout) clearTimeout(voicemailCloseTimeout);
+      voicemailCloseTimeout = setTimeout(doClose, 4000);
+    } catch {
+      doClose();
+    }
   }
 
   let realtimeClient: RealtimeClient | null = null;
@@ -356,12 +389,8 @@ export async function createTwilioRealtimeBridge(
         }
       }
       if (voicemailMode && evt.type === "response.done") {
-        try {
-          serverSocket.close(1000, "voicemail complete");
-        } catch {}
-        try {
-          realtimeClient?.disconnect();
-        } catch {}
+        // For voicemail we close after audio drains; rely on marks or a short fallback
+        tryCloseVoicemailAfterDrain("voicemail_complete");
       }
       if (timeLimitClosing && evt.type === "response.done") {
         try {
@@ -406,12 +435,7 @@ export async function createTwilioRealtimeBridge(
         if (!voicemailMode) handleSpeechStartedEvent();
       }
       if (voicemailMode && response.type === "response.done") {
-        try {
-          serverSocket.close(1000, "voicemail complete");
-        } catch {}
-        try {
-          realtimeClient?.disconnect();
-        } catch {}
+        tryCloseVoicemailAfterDrain("voicemail_complete");
       }
     } catch {}
   });

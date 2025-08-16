@@ -4,9 +4,10 @@ export function buildInitialCallGreeting(options: {
   voicemailMode: boolean;
   callDirection: "inbound" | "outbound" | "unknown";
 }): string {
-  const greeting = `Hey there! This is the ${BRAND} A.I. assistant.`;
+  const greeting = `Hello, this is the ${BRAND} A.I. assistant.`;
   if (options.voicemailMode) {
-    return `Please say exactly: ${greeting} Sorry I missed you! I'll just leave a quick voicemail. If you have any questions about our gates, openers, or anything else, just call back or shoot me a text and I'll help right away.`;
+    return `SYSTEM: You are leaving a voicemail. Do not greet. Do not ask questions. Speak the following EXACTLY.
+"${greeting} Sorry I missed you! I'll just leave a quick voicemail. If you have any questions about our gates, openers, or anything else, just call back or shoot me a text and I'll help right away."`;
   }
   if (options.callDirection === "inbound") {
     return `Greet the user with "${greeting} Thanks for calling! How can I help you today?"`;

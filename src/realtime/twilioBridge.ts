@@ -132,6 +132,7 @@ export async function createTwilioRealtimeBridge(
   let startEventProcessed = false;
   let voicemailCloseRequested = false;
   let alreadyClosed = false;
+  const preStartAudioBuffer: string[] = [];
 
   let timeLimitTimer: ReturnType<typeof setTimeout> | null = null;
   let timeLimitClosing = false;
@@ -334,17 +335,21 @@ export async function createTwilioRealtimeBridge(
         (evt as unknown as { delta?: string }).delta
       ) {
         const { delta } = evt as unknown as { delta: string };
-        const audioDelta = {
-          event: "media",
-          streamSid,
-          media: { payload: delta },
-        } as const;
-        serverSocket.send(JSON.stringify(audioDelta));
-        if (!responseStartTimestampTwilio)
-          responseStartTimestampTwilio = latestMediaTimestamp;
-        const itemId = (evt as unknown as { item_id?: string }).item_id;
-        if (itemId) lastAssistantItem = itemId;
-        sendMark();
+        if (streamSid) {
+          const audioDelta = {
+            event: "media",
+            streamSid,
+            media: { payload: delta },
+          } as const;
+          serverSocket.send(JSON.stringify(audioDelta));
+          if (!responseStartTimestampTwilio)
+            responseStartTimestampTwilio = latestMediaTimestamp;
+          const itemId = (evt as unknown as { item_id?: string }).item_id;
+          if (itemId) lastAssistantItem = itemId;
+          sendMark();
+        } else {
+          preStartAudioBuffer.push(delta);
+        }
       }
       if (evt.type === "input_audio_buffer.speech_started") {
         speechDetected = true;
@@ -392,16 +397,20 @@ export async function createTwilioRealtimeBridge(
       if (response.type && LOG_EVENT_TYPES.includes(response.type))
         rackyLog(`OpenAI ws message: ${response.type}`);
       if (response.type === "response.audio.delta" && response.delta) {
-        const audioDelta = {
-          event: "media",
-          streamSid,
-          media: { payload: response.delta },
-        } as const;
-        serverSocket.send(JSON.stringify(audioDelta));
-        if (!responseStartTimestampTwilio)
-          responseStartTimestampTwilio = latestMediaTimestamp;
-        if (response.item_id) lastAssistantItem = response.item_id;
-        sendMark();
+        if (streamSid) {
+          const audioDelta = {
+            event: "media",
+            streamSid,
+            media: { payload: response.delta },
+          } as const;
+          serverSocket.send(JSON.stringify(audioDelta));
+          if (!responseStartTimestampTwilio)
+            responseStartTimestampTwilio = latestMediaTimestamp;
+          if (response.item_id) lastAssistantItem = response.item_id;
+          sendMark();
+        } else {
+          preStartAudioBuffer.push(response.delta);
+        }
       }
       if (response.type === "input_audio_buffer.speech_started") {
         speechDetected = true;
@@ -561,6 +570,18 @@ export async function createTwilioRealtimeBridge(
           responseStartTimestampTwilio = null;
           latestMediaTimestamp = 0;
           rackyLog("Incoming Twilio stream has started", streamSid);
+          // Flush any audio deltas buffered before streamSid was known
+          if (streamSid && preStartAudioBuffer.length) {
+            for (const delta of preStartAudioBuffer.splice(0)) {
+              const audioDelta = {
+                event: "media",
+                streamSid,
+                media: { payload: delta },
+              } as const;
+              serverSocket.send(JSON.stringify(audioDelta));
+              sendMark();
+            }
+          }
           scheduleTimeLimit();
           break;
         }

@@ -185,7 +185,7 @@ export async function createTwilioRealtimeBridge(
     rackyLog("Creating OpenAIRealtimeClient (Twilio mode)");
     realtimeClient = new RealtimeClient({
       apiKey,
-      debug: true,
+      debug: false,
       url: OPENAI_URL,
     });
   } catch (e) {

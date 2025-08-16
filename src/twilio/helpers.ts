@@ -1,6 +1,6 @@
 import type { Env } from "../config/env";
 import { BOT_IDENTITY, CONVO_CONTEXT_LIMIT, PROJECTED_ADDRESS, TWILIO_API_BASE, TWILIO_CONV_BASE } from "../config/config";
-import { owrError, owrLog } from "../utils/log";
+import { rackyError, rackyLog } from "../utils/log";
 
 export function twilioAuthHeader(env: Env): string {
   const token = btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`);
@@ -45,14 +45,14 @@ export async function ensureBotParticipant(env: Env, conversationSid: string): P
       if (!addRes.ok) {
         const txt = await addRes.text();
         if (addRes.status === 409 && txt.includes('50438')) {
-          owrLog('[bot] group already exists; continuing');
+          rackyLog('[bot] group already exists; continuing');
           return;
         }
-        owrError('[bot] failed to add projected participant', txt);
+        rackyError('[bot] failed to add projected participant', txt);
       }
     }
   } catch (e) {
-    owrError('[bot] ensure participant error', e);
+    rackyError('[bot] ensure participant error', e);
   }
 }
 
@@ -115,10 +115,10 @@ export async function placeOutboundCalls(env: Env, e164Targets: string[], voiceU
         const json = (await res.json()) as { sid?: string };
         if (json.sid) callSids.push(json.sid);
       } else {
-        owrError('Failed to create call', await res.text());
+        rackyError('Failed to create call', await res.text());
       }
     } catch (e) {
-      owrError('Failed to start outbound call to', e164, e);
+      rackyError('Failed to start outbound call to', e164, e);
     }
   }
   return callSids;
@@ -193,7 +193,7 @@ export async function fetchConversationHistoryAsUiMessages(
   opts: { isGroup: boolean; limit: number }
 ): Promise<UiMessage[]> {
   try {
-    const res = await twilioGet(env, `/Conversations/${conversationSid}/Messages?PageSize=${opts.limit}`);
+    const res = await twilioGet(env, `/Conversations/${conversationSid}/Messages?Order=desc&PageSize=${opts.limit}`);
     const json = (await res.json()) as { messages?: Array<{ author?: string; body?: string; index?: number; sid?: string }> };
     const raw = (json.messages || []);
     raw.reverse();
@@ -204,7 +204,7 @@ export async function fetchConversationHistoryAsUiMessages(
     }
     return out;
   } catch (e) {
-    owrError("[/convo] failed to load history", e);
+    rackyError("[/convo] failed to load history", e);
     return [];
   }
 }

@@ -2,7 +2,7 @@ import { RealtimeClient } from "@openai/realtime-api-beta";
 import type { Env } from "../config/env";
 import { DEFAULT_VOICE, VoiceName } from "../config/voices";
 import { LOG_EVENT_TYPES, MODEL, OPENAI_URL, SHOW_TIMING_MATH, TIME_LIMIT_MS, FINAL_TIME_LIMIT_MESSAGE } from "../config/config";
-import { owrError, owrLog } from "../utils/log";
+import { rackyError, rackyLog } from "../utils/log";
 import { getAuthToken, validateAuth } from "../utils/auth";
 import { chatPrompt, realtimeConcatPrompt, buildInitialCallGreeting } from "../prompts/chat";
 
@@ -53,7 +53,7 @@ export async function createTwilioRealtimeBridge(
   }
 
   if (!apiKey) {
-    owrError("Missing OpenAI API key. Did you forget to set OPENAI_API_KEY?");
+    rackyError("Missing OpenAI API key. Did you forget to set OPENAI_API_KEY?");
     try { serverSocket.close(1011, "Server misconfigured: missing API key"); } catch {}
     return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
   }
@@ -101,10 +101,10 @@ export async function createTwilioRealtimeBridge(
 
   let realtimeClient: RealtimeClient | null = null;
   try {
-    owrLog("Creating OpenAIRealtimeClient (Twilio mode)");
+    rackyLog("Creating OpenAIRealtimeClient (Twilio mode)");
     realtimeClient = new RealtimeClient({ apiKey, debug: true, url: OPENAI_URL });
   } catch (e) {
-    owrError("Error creating OpenAI RealtimeClient (Twilio mode)", e);
+    rackyError("Error creating OpenAI RealtimeClient (Twilio mode)", e);
     try { serverSocket.close(1011, "Upstream client init failure"); } catch {}
     return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
   }
@@ -172,7 +172,7 @@ export async function createTwilioRealtimeBridge(
 
   realtimeClient.realtime.on("server.*", (evt: { type: string }) => {
     try {
-      if (evt.type && LOG_EVENT_TYPES.includes(evt.type)) owrLog(`Received event from OpenAI: ${evt.type}`);
+      if (evt.type && LOG_EVENT_TYPES.includes(evt.type)) rackyLog(`Received event from OpenAI: ${evt.type}`);
       if ((evt as unknown as { type?: string; delta?: string }).type === "response.audio.delta" && (evt as unknown as { delta?: string }).delta) {
         const { delta } = evt as unknown as { delta: string };
         const audioDelta = { event: "media", streamSid, media: { payload: delta } } as const;
@@ -194,7 +194,7 @@ export async function createTwilioRealtimeBridge(
         try { realtimeClient?.disconnect(); } catch {}
       }
     } catch (error) {
-      owrError("Error processing OpenAI message (Twilio mode)", error);
+      rackyError("Error processing OpenAI message (Twilio mode)", error);
     }
   });
 
@@ -205,7 +205,7 @@ export async function createTwilioRealtimeBridge(
         const raw = typeof event.data === "string" ? event.data : "";
         if (!raw) return;
         const response = JSON.parse(raw) as { type?: string; delta?: string; item_id?: string };
-        if (response.type && LOG_EVENT_TYPES.includes(response.type)) owrLog(`OpenAI ws message: ${response.type}`);
+        if (response.type && LOG_EVENT_TYPES.includes(response.type)) rackyLog(`OpenAI ws message: ${response.type}`);
         if (response.type === "response.audio.delta" && response.delta) {
           const audioDelta = { event: "media", streamSid, media: { payload: response.delta } } as const;
           serverSocket.send(JSON.stringify(audioDelta));
@@ -225,7 +225,7 @@ export async function createTwilioRealtimeBridge(
   );
 
   realtimeClient.realtime.on("close", (metadata: { error: boolean }) => {
-    owrLog(`Closing server-side (Twilio mode) because I received a close event: (error: ${metadata.error})`);
+    rackyLog(`Closing server-side (Twilio mode) because I received a close event: (error: ${metadata.error})`);
     try { serverSocket.close(); } catch {}
   });
 
@@ -250,7 +250,7 @@ export async function createTwilioRealtimeBridge(
           if (isStartEvent(twilioEvent)) {
             streamSid = twilioEvent.start?.streamSid ?? null;
             const customParams = twilioEvent.start?.customParameters || twilioEvent.start?.custom_parameters || [];
-            owrLog("[twilio] start.customParameters:", customParams);
+            rackyLog("[twilio] start.customParameters:", customParams);
             for (const p of customParams) {
               const key = (p.name || p.key || "").toLowerCase();
               const rawValue = p.value || "";
@@ -278,7 +278,7 @@ export async function createTwilioRealtimeBridge(
           }
           responseStartTimestampTwilio = null;
           latestMediaTimestamp = 0;
-          owrLog("Incoming Twilio stream has started", streamSid);
+          rackyLog("Incoming Twilio stream has started", streamSid);
           scheduleTimeLimit();
           break;
         }
@@ -287,18 +287,18 @@ export async function createTwilioRealtimeBridge(
           break;
         }
         default: {
-          owrLog("Received non-media Twilio event:", (twilioEvent as TwilioBaseEvent).event);
+          rackyLog("Received non-media Twilio event:", (twilioEvent as TwilioBaseEvent).event);
           break;
         }
       }
     } catch (error) {
-      owrError("Error parsing message from Twilio (Twilio mode)", error);
+      rackyError("Error parsing message from Twilio (Twilio mode)", error);
     }
   });
 
   serverSocket.addEventListener("close", () => {
     try { if (realtimeClient?.isConnected()) realtimeClient.disconnect(); } catch {}
-    owrLog("Twilio client disconnected.");
+    rackyLog("Twilio client disconnected.");
     try { if (timeLimitTimer) clearTimeout(timeLimitTimer); } catch {}
     try { if (timeLimitCloseFallback) clearTimeout(timeLimitCloseFallback); } catch {}
   });
@@ -316,10 +316,10 @@ export async function createTwilioRealtimeBridge(
   ctx.waitUntil(
     (async () => {
       try {
-        owrLog(`Connecting to OpenAI (Twilio mode)...`);
+        rackyLog(`Connecting to OpenAI (Twilio mode)...`);
         // @ts-expect-error Waiting on sdk types
         await realtimeClient!.connect({ model: MODEL });
-        owrLog(`Connected to OpenAI successfully (Twilio mode)!`);
+        rackyLog(`Connected to OpenAI successfully (Twilio mode)!`);
         initializeSession();
         if (shouldSendInitialOnConnect) { sendInitialConversationItem(); shouldSendInitialOnConnect = false; }
         while (twilioQueue.length) {
@@ -334,7 +334,7 @@ export async function createTwilioRealtimeBridge(
           } catch {}
         }
       } catch (e) {
-        owrError("Error connecting to OpenAI (Twilio mode)", e);
+        rackyError("Error connecting to OpenAI (Twilio mode)", e);
         try { serverSocket.close(1011, "Upstream connect failure"); } catch {}
       }
     })()

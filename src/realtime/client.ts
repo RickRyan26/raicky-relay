@@ -1,7 +1,7 @@
 import { RealtimeClient } from "@openai/realtime-api-beta";
 import type { Env } from "../config/env";
 import { LOG_EVENT_TYPES, MODEL, OPENAI_URL, SHOW_TIMING_MATH, TIME_LIMIT_MS, FINAL_TIME_LIMIT_MESSAGE } from "../config/config";
-import { owrError, owrLog } from "../utils/log";
+import { rackyError, rackyLog } from "../utils/log";
 import { getAuthToken, validateAuth } from "../utils/auth";
 
 export async function createRealtimeClient(
@@ -20,7 +20,7 @@ export async function createRealtimeClient(
 
   const apiKey = env.OPENAI_API_KEY;
   if (!apiKey) {
-    owrError(
+    rackyError(
       "Missing OpenAI API key. Did you forget to set OPENAI_API_KEY in .dev.vars (for local dev) or with wrangler secret put OPENAI_API_KEY (for production)?"
     );
     return new Response("Missing API key", { status: 401 });
@@ -40,10 +40,10 @@ export async function createRealtimeClient(
   let realtimeClient: RealtimeClient | null = null;
 
   try {
-    owrLog("Creating OpenAIRealtimeClient");
+    rackyLog("Creating OpenAIRealtimeClient");
     realtimeClient = new RealtimeClient({ apiKey, debug: true, url: OPENAI_URL });
   } catch (e) {
-    owrError("Error creating OpenAI RealtimeClient", e);
+    rackyError("Error creating OpenAI RealtimeClient", e);
     serverSocket.close();
     return new Response("Error creating OpenAI RealtimeClient", { status: 500 });
   }
@@ -64,7 +64,7 @@ export async function createRealtimeClient(
   });
 
   realtimeClient.realtime.on("close", (metadata: { error: boolean }) => {
-    owrLog(`Closing server-side because I received a close event: (error: ${metadata.error})`);
+    rackyLog(`Closing server-side because I received a close event: (error: ${metadata.error})`);
     serverSocket.close();
   });
 
@@ -74,7 +74,7 @@ export async function createRealtimeClient(
       const parsedEvent = JSON.parse(data);
       realtimeClient.realtime.send(parsedEvent.type, parsedEvent);
     } catch (e) {
-      owrError("Error parsing event from client", data);
+      rackyError("Error parsing event from client", data);
     }
   };
 
@@ -88,7 +88,7 @@ export async function createRealtimeClient(
   });
 
   serverSocket.addEventListener("close", ({ code, reason }) => {
-    owrLog(`Closing server-side because the client closed the connection: ${code} ${reason}`);
+    rackyLog(`Closing server-side because the client closed the connection: ${code} ${reason}`);
     realtimeClient.disconnect();
     messageQueue.length = 0;
     try { clearTimeout(clientTimeLimitTimer); } catch {}
@@ -99,16 +99,16 @@ export async function createRealtimeClient(
   ctx.waitUntil(
     (async () => {
       try {
-        owrLog(`Connecting to OpenAI...`);
+        rackyLog(`Connecting to OpenAI...`);
         // @ts-expect-error Waiting on openai sdk types
         await realtimeClient.connect({ model });
-        owrLog(`Connected to OpenAI successfully!`);
+        rackyLog(`Connected to OpenAI successfully!`);
         while (messageQueue.length) {
           const message = messageQueue.shift();
           if (message) messageHandler(message);
         }
       } catch (e) {
-        owrError("Error connecting to OpenAI", e);
+        rackyError("Error connecting to OpenAI", e);
         try { serverSocket.close(1011, "Upstream connect failure"); } catch {}
       }
     })()

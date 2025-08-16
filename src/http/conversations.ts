@@ -15,7 +15,7 @@ import {
   twilioPost,
   UiMessage,
 } from "../twilio/helpers";
-import { owrLog } from "../utils/log";
+import { rackyLog } from "../utils/log";
 
 export async function handleTwilioConversationsWebhook(
   request: Request,
@@ -33,7 +33,7 @@ export async function handleTwilioConversationsWebhook(
     (form.get("MessageBody") as string | null) ||
     "";
 
-  owrLog("[/twilio/convo]", {
+  rackyLog("[/twilio/convo]", {
     eventType,
     conversationSid,
     author,
@@ -70,7 +70,7 @@ export async function handleTwilioConversationsWebhook(
           try {
             const msgRes = await twilioGet(
               env,
-              `/Conversations/${conversationSid}/Messages?PageSize=1`
+              `/Conversations/${conversationSid}/Messages?Order=desc&PageSize=1`
             );
             const msgJson = (await msgRes.json()) as {
               messages?: Array<{
@@ -92,7 +92,7 @@ export async function handleTwilioConversationsWebhook(
         if (author === BOT_IDENTITY || author === "system") return;
 
         if (dedupeKey && processed.has(dedupeKey)) {
-          owrLog("[dedupe] already processed", dedupeKey);
+          rackyLog("[dedupe] already processed", dedupeKey);
           return;
         }
         if (dedupeKey) processed.set(dedupeKey, now);

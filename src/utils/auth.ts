@@ -1,6 +1,6 @@
 import { base64ToBytes, base64UrlToBytes } from "./base64";
 import type { Env } from "../config/env";
-import { owrLog } from "./log";
+import { rackyLog } from "./log";
 
 export function sanitizeToken(raw: string | null): string | null {
   if (!raw) return null;
@@ -52,11 +52,11 @@ export async function validateAuth(
 ): Promise<boolean> {
   try {
     if (!authParam) {
-      owrLog("[auth] missing token");
+      rackyLog("[auth] missing token");
       return false;
     }
     if (!env.ENCRYPTION_KEY) {
-      owrLog("[auth] missing ENCRYPTION_KEY");
+      rackyLog("[auth] missing ENCRYPTION_KEY");
       return false;
     }
     const key = base64ToBytes(env.ENCRYPTION_KEY);
@@ -70,20 +70,20 @@ export async function validateAuth(
     };
     const now = Date.now();
     if (decoded.exp < now) {
-      owrLog("[auth] token expired", { exp: decoded.exp, now });
+      rackyLog("[auth] token expired", { exp: decoded.exp, now });
       return false;
     }
     if (decoded.iat > now + 30_000) {
-      owrLog("[auth] token iat too far in future", { iat: decoded.iat, now });
+      rackyLog("[auth] token iat too far in future", { iat: decoded.iat, now });
       return false;
     }
     if (decoded.origin !== expectedOrigin) {
-      owrLog("[auth] origin mismatch", { expected: expectedOrigin, got: decoded.origin });
+      rackyLog("[auth] origin mismatch", { expected: expectedOrigin, got: decoded.origin });
       return false;
     }
     return true;
   } catch {
-    owrLog("[auth] token decrypt/parse failed");
+    rackyLog("[auth] token decrypt/parse failed");
     return false;
   }
 }

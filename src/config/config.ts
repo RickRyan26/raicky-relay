@@ -17,7 +17,7 @@ export const ALLOWED_VOICES = [
 
 export type VoiceName = (typeof ALLOWED_VOICES)[number];
 
-export const DEFAULT_VOICE: VoiceName = "echo";
+export const DEFAULT_VOICE: VoiceName = "ash";
 
 // Logging filters for realtime events
 export const LOG_EVENT_TYPES: ReadonlyArray<string> = [

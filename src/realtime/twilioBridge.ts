@@ -81,6 +81,8 @@ export async function createTwilioRealtimeBridge(
   const directionParam = (
     reqUrl.searchParams.get("direction") || ""
   ).toLowerCase();
+  // Read amd from URL as an immediate hint while waiting for Twilio customParameters
+  const amdParam = (reqUrl.searchParams.get("amd") || "").toLowerCase();
 
   let voicemailMode = false;
   let callDirection: "inbound" | "outbound" | "unknown" = "unknown";
@@ -92,6 +94,20 @@ export async function createTwilioRealtimeBridge(
 
   if (directionParam === "inbound" || directionParam === "outbound") {
     callDirection = directionParam as "inbound" | "outbound";
+  }
+
+  // Seed voicemailMode immediately from amd query param if present
+  if (amdParam) {
+    const old = voicemailMode;
+    voicemailMode =
+      amdParam.includes("machine") ||
+      amdParam === "machine_start" ||
+      amdParam === "machine_end_beep" ||
+      amdParam === "machine_end_silence" ||
+      amdParam === "machine_end_other";
+    rackyLog(
+      `[twilio] initial amd param=${amdParam}; voicemailMode changed from ${old} to ${voicemailMode}`
+    );
   }
 
   if (!apiKey) {

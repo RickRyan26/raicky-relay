@@ -43,6 +43,8 @@ export async function handleTwilioVoiceWebhook(
 
   const amdValue = answeredBy ?? "unknown";
   relayUrl += `&direction=${direction}`;
+  // Also include AMD on the WS URL so the bridge can read it immediately
+  relayUrl += `&amd=${encodeURIComponent(amdValue)}`;
   
   // Debug logging to see what AMD values we're getting
   console.log(`[twilio-webhook] AnsweredBy: "${answeredBy}", AMD value: "${amdValue}", Direction: "${direction}"`);

@@ -17,4 +17,4 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RateLimitBucket"]
+new_sqlite_classes = ["RateLimitBucket"]

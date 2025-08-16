@@ -1,10 +1,14 @@
 import { RealtimeClient } from "@openai/realtime-api-beta";
 import {
-  DEFAULT_VOICE, FINAL_TIME_LIMIT_MESSAGE, LOG_EVENT_TYPES,
+  ALLOWED_VOICES,
+  DEFAULT_VOICE,
+  FINAL_TIME_LIMIT_MESSAGE,
+  LOG_EVENT_TYPES,
   MODEL,
   OPENAI_URL,
   SHOW_TIMING_MATH,
-  TIME_LIMIT_MS, VoiceName
+  TIME_LIMIT_MS,
+  VoiceName,
 } from "../config/config";
 import type { Env } from "../config/env";
 import {
@@ -80,18 +84,9 @@ export async function createTwilioRealtimeBridge(
 
   let voicemailMode = false;
   let callDirection: "inbound" | "outbound" | "unknown" = "unknown";
-  const selectedVoice: VoiceName = (
-    [
-      "alloy",
-      "ash",
-      "ballad",
-      "coral",
-      "echo",
-      "sage",
-      "shimmer",
-      "verse",
-    ] as const
-  ).includes(voiceParam as VoiceName)
+  const selectedVoice: VoiceName = ALLOWED_VOICES.includes(
+    voiceParam as VoiceName
+  )
     ? (voiceParam as VoiceName)
     : DEFAULT_VOICE;
 
@@ -208,7 +203,9 @@ export async function createTwilioRealtimeBridge(
   function sendInitialConversationItem() {
     if (initialUserMessageSent) return;
     initialUserMessageSent = true;
-    rackyLog(`[twilio] Creating initial greeting with voicemailMode: ${voicemailMode}, callDirection: ${callDirection}`);
+    rackyLog(
+      `[twilio] Creating initial greeting with voicemailMode: ${voicemailMode}, callDirection: ${callDirection}`
+    );
     const initialMessage = buildInitialCallGreeting({
       voicemailMode,
       callDirection,
@@ -403,16 +400,21 @@ export async function createTwilioRealtimeBridge(
             for (const p of customParams) {
               const key = (p.name || p.key || "").toLowerCase();
               const value = (p.value || "").toLowerCase();
-              rackyLog(`[twilio] Processing parameter - key: "${key}", value: "${value}"`);
+              rackyLog(
+                `[twilio] Processing parameter - key: "${key}", value: "${value}"`
+              );
               if (key === "amd") {
                 const oldVoicemailMode = voicemailMode;
                 // Check for various machine/voicemail indicators
-                voicemailMode = value.includes("machine") || 
-                               value === "machine_start" || 
-                               value === "machine_end_beep" || 
-                               value === "machine_end_silence" || 
-                               value === "machine_end_other";
-                rackyLog(`[twilio] AMD parameter detected - value: "${value}", voicemailMode changed from ${oldVoicemailMode} to ${voicemailMode}`);
+                voicemailMode =
+                  value.includes("machine") ||
+                  value === "machine_start" ||
+                  value === "machine_end_beep" ||
+                  value === "machine_end_silence" ||
+                  value === "machine_end_other";
+                rackyLog(
+                  `[twilio] AMD parameter detected - value: "${value}", voicemailMode changed from ${oldVoicemailMode} to ${voicemailMode}`
+                );
               }
             }
             // Always defer sending initial message to ensure AMD processing is complete

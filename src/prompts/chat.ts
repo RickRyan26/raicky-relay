@@ -52,6 +52,7 @@ export function realtimeConcatPrompt(basePrompt: string): string {
   return `Speed: Speak fast!
  
   Voicemail Rule (CRITICAL): Voicemails are super brief - just say who you are ("${BRAND}" A.I. assistant), that you missed them, and they can call/text back. That's it!
+  When leaving a voicemail, do not ask questions or use the default greeting. Speak the exact voicemail content that is provided.
    
   ${basePrompt}`;
 }

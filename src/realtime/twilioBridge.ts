@@ -127,6 +127,10 @@ export async function createTwilioRealtimeBridge(
   let lastAssistantItem: NullableString = null;
   let markQueue: string[] = [];
   let responseStartTimestampTwilio: number | null = null;
+  let speechDetected = false;
+  let deferInitialForOutbound = false;
+  let outboundVoicemailTimer: ReturnType<typeof setTimeout> | null = null;
+  const OUTBOUND_VOICEMAIL_WAIT_MS = 8000;
 
   let timeLimitTimer: ReturnType<typeof setTimeout> | null = null;
   let timeLimitClosing = false;
@@ -249,6 +253,30 @@ export async function createTwilioRealtimeBridge(
     );
   }
 
+  function clearOutboundTimer() {
+    try {
+      if (outboundVoicemailTimer) clearTimeout(outboundVoicemailTimer);
+    } catch {}
+    outboundVoicemailTimer = null;
+  }
+
+  function scheduleOutboundVoicemailFallback() {
+    clearOutboundTimer();
+    outboundVoicemailTimer = setTimeout(() => {
+      try {
+        if (!initialUserMessageSent && !speechDetected) {
+          // Treat as voicemail and send the voicemail message
+          const old = voicemailMode;
+          voicemailMode = true;
+          rackyLog(
+            `[twilio] No speech detected within ${OUTBOUND_VOICEMAIL_WAIT_MS}ms for outbound call; switching voicemailMode from ${old} to ${voicemailMode}`
+          );
+          sendInitialConversationItem();
+        }
+      } catch {}
+    }, OUTBOUND_VOICEMAIL_WAIT_MS);
+  }
+
   function sendMark() {
     if (!streamSid) return;
     const markEvent = {
@@ -310,6 +338,7 @@ export async function createTwilioRealtimeBridge(
         sendMark();
       }
       if (evt.type === "input_audio_buffer.speech_started") {
+        speechDetected = true;
         if (!voicemailMode) handleSpeechStartedEvent();
       }
       if (voicemailMode && evt.type === "response.done") {
@@ -359,6 +388,7 @@ export async function createTwilioRealtimeBridge(
         sendMark();
       }
       if (response.type === "input_audio_buffer.speech_started") {
+        speechDetected = true;
         if (!voicemailMode) handleSpeechStartedEvent();
       }
       if (voicemailMode && response.type === "response.done") {
@@ -439,6 +469,9 @@ export async function createTwilioRealtimeBridge(
               setTimeout(() => sendInitialConversationItem(), 100);
             } else {
               shouldSendInitialOnConnect = true;
+            }
+            if (callDirection === "outbound") {
+              scheduleOutboundVoicemailFallback();
             }
           }
           responseStartTimestampTwilio = null;

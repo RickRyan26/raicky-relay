@@ -24,7 +24,11 @@ export async function handleTwilioVoiceWebhook(
           : "";
       const to =
         typeof form.get("To") === "string" ? (form.get("To") as string) : "";
-      if (from === "+14082605145") direction = "outbound";
+      const dirRaw = (form.get("Direction") || form.get("CallDirection") || "") as string;
+      const dirLower = dirRaw.toLowerCase();
+      if (dirLower.includes("outbound")) direction = "outbound";
+      else if (dirLower.includes("inbound")) direction = "inbound";
+      else if (from === "+14082605145") direction = "outbound";
       else if (to === "+14082605145") direction = "inbound";
     } catch {
       answeredBy = null;
@@ -32,13 +36,16 @@ export async function handleTwilioVoiceWebhook(
   } else {
     const answeredByParam = url.searchParams.get("AnsweredBy");
     answeredBy = answeredByParam ? answeredByParam.toLowerCase() : null;
-    const dirParam = url.searchParams.get("direction");
-    direction =
-      dirParam === "outbound"
-        ? "outbound"
-        : dirParam === "inbound"
-        ? "inbound"
-        : "unknown";
+    const dirParam =
+      url.searchParams.get("Direction") ||
+      url.searchParams.get("CallDirection") ||
+      url.searchParams.get("direction");
+    const dirLower = (dirParam || "").toLowerCase();
+    direction = dirLower.includes("outbound")
+      ? "outbound"
+      : dirLower.includes("inbound")
+      ? "inbound"
+      : "unknown";
   }
 
   const amdValue = answeredBy ?? "unknown";

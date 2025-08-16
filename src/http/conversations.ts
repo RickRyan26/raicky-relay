@@ -112,11 +112,15 @@ export async function handleTwilioConversationsWebhook(
           const e164Targets = callTargets.map((ten) => `+1${ten}`);
           const origin = new URL(request.url).origin;
           const voiceUrl = `${origin}/twilio/voice`;
-          const started = await placeOutboundCalls(env, e164Targets, voiceUrl);
+          
+          // Use fast mode for immediate AI response (no AMD delay)
+          const fastMode = true;
+          const started = await placeOutboundCalls(env, e164Targets, voiceUrl, fastMode);
+          
           const humanList = e164Targets.join(", ");
           const ack =
             started.length > 0
-              ? `Calling ${humanList} now!`
+              ? `Calling ${humanList} now with ultra-fast mode!`
               : `Sorry, I couldn't call ${humanList}`;
           await ensureBotParticipant(env, conversationSid);
           await twilioPost(

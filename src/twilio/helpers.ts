@@ -95,17 +95,33 @@ export function parseGroupNumbers(text: string): string[] {
   return numbers;
 }
 
-export async function placeOutboundCalls(env: Env, e164Targets: string[], voiceUrl: string): Promise<string[]> {
+export async function placeOutboundCalls(env: Env, e164Targets: string[], voiceUrl: string, fastMode: boolean = false): Promise<string[]> {
   const callSids: string[] = [];
+  rackyLog(`[outbound] Creating ${e164Targets.length} calls with ${fastMode ? 'FAST' : 'OPTIMIZED'} mode`);
+  
   for (const e164 of e164Targets) {
     try {
-      const body = new URLSearchParams({
+      const params: Record<string, string> = {
         To: e164,
         From: PROJECTED_ADDRESS,
         Url: voiceUrl,
         Method: 'GET',
-        MachineDetection: 'DetectMessageEnd'
-      });
+      };
+
+      // Add AMD settings based on mode
+      if (!fastMode) {
+        // Optimized mode: Fast 3-second AMD (down from 30s+ default)
+        params.MachineDetection = 'Enable';
+        params.MachineDetectionTimeout = '3';
+        params.MachineDetectionSpeechThreshold = '2000';
+        params.MachineDetectionSpeechEndThreshold = '1000';
+      }
+      // Ultra-fast mode: No AMD params added (immediate connection, AI handles voicemails)
+
+      const body = new URLSearchParams(params);
+      
+      rackyLog(`[outbound] Calling ${e164} with AMD: ${fastMode ? 'DISABLED' : 'ENABLED (3s timeout)'}`);
+      
       const res = await fetch(`${TWILIO_API_BASE}/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, {
         method: 'POST',
         headers: { Authorization: twilioAuthHeader(env), 'Content-Type': 'application/x-www-form-urlencoded' },

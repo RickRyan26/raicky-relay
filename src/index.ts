@@ -48,6 +48,15 @@ function realtimeConcatPrompt(basePrompt: string): string {
   return `Speak fast. ${basePrompt}`.trim();
 }
 
+// Base64url encode a UTF-8 string
+function encodeBase64UrlUtf8(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const b64 = btoa(binary);
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
+}
+
 // Direct text generation using OpenAI API (replaces nonstream endpoint)
 async function generateTextDirect(
   env: Env,
@@ -61,6 +70,8 @@ async function generateTextDirect(
       content: msg.parts.map(part => part.text).join('')
     }));
 
+    const model = 'gpt-4o';
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -68,7 +79,7 @@ async function generateTextDirect(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-5',
+        model,
         messages: [
           { role: 'system', content: systemPrompt },
           ...openaiMessages
@@ -556,9 +567,10 @@ async function handleTwilioVoiceWebhook(
 ): Promise<Response> {
   const url = new URL(request.url);
   
-  // Generate relay auth token and build URL with self-reference
+  // Generate relay auth token and build URL with self-reference (use wss for media stream)
   const token = await generateRelayAuthToken(env, 'twilio');
-  let relayUrl = `${url.origin}/token/${token}?mode=twilio&voice=echo`;
+  const wssOrigin = `wss://${url.host}`;
+  let relayUrl = `${wssOrigin}/token/${token}?mode=twilio&voice=echo`;
 
   // Parse form data for POST requests or query params for GET
   let answeredBy: string | null = null;
@@ -588,16 +600,9 @@ async function handleTwilioVoiceWebhook(
   const amdValue = answeredBy ?? 'unknown';
   const voicemailMode = amdValue.includes('machine');
   
-  // Encode system prompt and greeting as base64url
-  const sysB64 = btoa(realtimeConcatPrompt(externalChatPrompt(new Date().toISOString())))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
-  
-  const greetB64 = btoa(buildInitialCallGreeting({ voicemailMode, callDirection: direction }))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
+  // Encode system prompt and greeting as base64url UTF-8
+  const sysB64 = encodeBase64UrlUtf8(realtimeConcatPrompt(externalChatPrompt(new Date().toISOString())));
+  const greetB64 = encodeBase64UrlUtf8(buildInitialCallGreeting({ voicemailMode, callDirection: direction }));
 
   const twiml = buildTwimlConnectStream(relayUrl, {
     amd: amdValue,
@@ -677,7 +682,8 @@ async function handleTwilioConversationsWebhook(
         const callTargets = parseCallNumbers(body);
         if (callTargets.length > 0) {
           const e164Targets = callTargets.map((ten) => `+1${ten}`);
-          const voiceUrl = `https://www.gateframes.com/api/twilio/voice`;
+          const origin = new URL(request.url).origin;
+          const voiceUrl = `${origin}/twilio/voice`;
           const started = await placeOutboundCalls(env, e164Targets, voiceUrl);
           const humanList = e164Targets.join(", ");
           const ack = started.length > 0

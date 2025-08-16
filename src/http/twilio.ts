@@ -1,7 +1,7 @@
 import type { Env } from "../config/env";
 import { encodeBase64UrlUtf8 } from "../utils/base64";
 import { buildTwimlConnectStream } from "../utils/xml";
-import { chatPrompt, buildInitialCallGreeting, realtimeConcatPrompt } from "../prompts/chat";
+import { buildInitialCallGreeting } from "../prompts/chat";
 import { generateRelayAuthToken } from "../tokens/relay";
 
 export async function handleTwilioVoiceWebhook(
@@ -9,40 +9,43 @@ export async function handleTwilioVoiceWebhook(
   env: Env
 ): Promise<Response> {
   const url = new URL(request.url);
-  const token = await generateRelayAuthToken(env, 'twilio');
+  const token = await generateRelayAuthToken(env, "twilio");
   const wssOrigin = `wss://${url.host}`;
-  let relayUrl = `${wssOrigin}/token/${token}?mode=twilio&voice=echo`;
+  let relayUrl = `${wssOrigin}/token/${token}?mode=twilio`;
 
   let answeredBy: string | null = null;
-  let direction: 'inbound' | 'outbound' | 'unknown' = 'unknown';
-  if (request.method === 'POST') {
+  let direction: "inbound" | "outbound" | "unknown" = "unknown";
+  if (request.method === "POST") {
     try {
       const form = await request.formData();
-      const ab = form.get('AnsweredBy');
-      answeredBy = typeof ab === 'string' ? ab.toLowerCase() : null;
-      const from = typeof form.get('From') === 'string' ? (form.get('From') as string) : '';
-      const to = typeof form.get('To') === 'string' ? (form.get('To') as string) : '';
-      if (from === '+14082605145') direction = 'outbound';
-      else if (to === '+14082605145') direction = 'inbound';
+      const ab = form.get("AnsweredBy");
+      answeredBy = typeof ab === "string" ? ab.toLowerCase() : null;
+      const from =
+        typeof form.get("From") === "string"
+          ? (form.get("From") as string)
+          : "";
+      const to =
+        typeof form.get("To") === "string" ? (form.get("To") as string) : "";
+      if (from === "+14082605145") direction = "outbound";
+      else if (to === "+14082605145") direction = "inbound";
     } catch {
       answeredBy = null;
     }
   } else {
-    const answeredByParam = url.searchParams.get('AnsweredBy');
+    const answeredByParam = url.searchParams.get("AnsweredBy");
     answeredBy = answeredByParam ? answeredByParam.toLowerCase() : null;
-    const dirParam = url.searchParams.get('direction');
-    direction = dirParam === 'outbound' ? 'outbound' : dirParam === 'inbound' ? 'inbound' : 'unknown';
+    const dirParam = url.searchParams.get("direction");
+    direction =
+      dirParam === "outbound"
+        ? "outbound"
+        : dirParam === "inbound"
+        ? "inbound"
+        : "unknown";
   }
 
-  const amdValue = answeredBy ?? 'unknown';
-  const voicemailMode = amdValue.includes('machine');
+  const amdValue = answeredBy ?? "unknown";
+  relayUrl += `&direction=${direction}`;
+  const twiml = buildTwimlConnectStream(relayUrl, { amd: amdValue });
 
-  const sysB64 = encodeBase64UrlUtf8(realtimeConcatPrompt(chatPrompt(new Date().toISOString())));
-  const greetB64 = encodeBase64UrlUtf8(buildInitialCallGreeting({ voicemailMode, callDirection: direction }));
-
-  const twiml = buildTwimlConnectStream(relayUrl, { amd: amdValue, direction, sys: sysB64, greet: greetB64 });
-
-  return new Response(twiml, { headers: { 'Content-Type': 'text/xml' } });
+  return new Response(twiml, { headers: { "Content-Type": "text/xml" } });
 }
-
-

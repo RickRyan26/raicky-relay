@@ -4,6 +4,7 @@ import { DEFAULT_VOICE, VoiceName } from "../config/voices";
 import { LOG_EVENT_TYPES, MODEL, OPENAI_URL, SHOW_TIMING_MATH, TIME_LIMIT_MS, FINAL_TIME_LIMIT_MESSAGE } from "../config/config";
 import { owrError, owrLog } from "../utils/log";
 import { getAuthToken, validateAuth } from "../utils/auth";
+import { chatPrompt, realtimeConcatPrompt, buildInitialCallGreeting } from "../prompts/chat";
 
 type NullableString = string | null;
 type TwilioBaseEvent = { event: string };
@@ -38,6 +39,7 @@ export async function createTwilioRealtimeBridge(
     return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
   }
   const voiceParam = (reqUrl.searchParams.get("voice") || "").toLowerCase();
+  const directionParam = (reqUrl.searchParams.get("direction") || "").toLowerCase();
   let systemInstructionsOverride: string | null = null;
   let initialGreetingOverride: string | null = null;
   let voicemailMode = false;
@@ -45,6 +47,10 @@ export async function createTwilioRealtimeBridge(
   const selectedVoice: VoiceName = (['alloy','ash','ballad','coral','echo','sage','shimmer','verse'] as const).includes(
     voiceParam as VoiceName
   ) ? (voiceParam as VoiceName) : DEFAULT_VOICE;
+
+  if (directionParam === 'inbound' || directionParam === 'outbound') {
+    callDirection = directionParam as 'inbound' | 'outbound';
+  }
 
   if (!apiKey) {
     owrError("Missing OpenAI API key. Did you forget to set OPENAI_API_KEY?");
@@ -104,6 +110,9 @@ export async function createTwilioRealtimeBridge(
   }
 
   function initializeSession() {
+    const fallbackInstructions = realtimeConcatPrompt(
+      chatPrompt(new Date().toISOString())
+    );
     const sessionUpdate = {
       type: "session.update",
       session: {
@@ -111,7 +120,7 @@ export async function createTwilioRealtimeBridge(
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         voice: selectedVoice,
-        instructions: systemInstructionsOverride ?? '',
+        instructions: systemInstructionsOverride ?? fallbackInstructions,
         modalities: ["text", "audio"],
         temperature: 0.8,
       },
@@ -258,6 +267,12 @@ export async function createTwilioRealtimeBridge(
               } else if (key === 'greet') {
                 try { initialGreetingOverride = decodeBase64UrlUtf8(rawValue); } catch { initialGreetingOverride = null; }
               }
+            }
+            if (!initialGreetingOverride) {
+              const greetText = buildInitialCallGreeting({ voicemailMode, callDirection });
+              initialGreetingOverride = voicemailMode
+                ? `Please say exactly: ${greetText}`
+                : `Greet the user with "${greetText}"`;
             }
             if (realtimeClient?.isConnected()) sendInitialConversationItem(); else shouldSendInitialOnConnect = true;
           }

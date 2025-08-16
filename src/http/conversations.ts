@@ -1,7 +1,7 @@
 import { BOT_IDENTITY, CONVO_CONTEXT_LIMIT } from "../config/config";
 import type { Env } from "../config/env";
 import { generateTextDirect } from "../openai/text";
-import { chatPrompt } from "../prompts/chat";
+import { chatPrompt, textConcatPrompt } from "../prompts/chat";
 import {
   cleanseGroupMentions,
   createConversationWithParticipants,
@@ -200,7 +200,7 @@ export async function handleTwilioConversationsWebhook(
           reply = await generateTextDirect(
             env,
             messages,
-            chatPrompt(timeStamp)
+            textConcatPrompt(chatPrompt(timeStamp))
           );
         } catch {}
 

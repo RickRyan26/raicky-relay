@@ -135,6 +135,9 @@ export async function createTwilioRealtimeBridge(
   let voicemailCloseRequested = false;
   let voicemailCloseTimeout: ReturnType<typeof setTimeout> | null = null;
   let alreadyClosed = false;
+  let lastAudioDeltaAtMs: number | null = null;
+  let outboundHumanGreetingTimer: ReturnType<typeof setTimeout> | null = null;
+  const OUTBOUND_HUMAN_GREETING_DELAY_MS = 800;
 
   let timeLimitTimer: ReturnType<typeof setTimeout> | null = null;
   let timeLimitClosing = false;
@@ -197,10 +200,10 @@ export async function createTwilioRealtimeBridge(
         realtimeClient?.disconnect();
       } catch {}
     };
+    const postDrainDelay = 1500; // allow Twilio to finish last buffer
     if (markQueue.length === 0) {
-      // Give Twilio a moment to flush playback
       try {
-        setTimeout(doClose, 500);
+        setTimeout(doClose, postDrainDelay);
       } catch {
         doClose();
       }
@@ -208,10 +211,29 @@ export async function createTwilioRealtimeBridge(
     }
     try {
       if (voicemailCloseTimeout) clearTimeout(voicemailCloseTimeout);
-      voicemailCloseTimeout = setTimeout(doClose, 4000);
+      // longer fallback for longer voicemails
+      voicemailCloseTimeout = setTimeout(doClose, 12000);
     } catch {
       doClose();
     }
+  }
+
+  function clearOutboundHumanGreetingTimer() {
+    try {
+      if (outboundHumanGreetingTimer) clearTimeout(outboundHumanGreetingTimer);
+    } catch {}
+    outboundHumanGreetingTimer = null;
+  }
+
+  function scheduleOutboundHumanGreeting() {
+    clearOutboundHumanGreetingTimer();
+    outboundHumanGreetingTimer = setTimeout(() => {
+      try {
+        if (!initialUserMessageSent && !voicemailMode && !speechDetected) {
+          sendInitialConversationItem();
+        }
+      } catch {}
+    }, OUTBOUND_HUMAN_GREETING_DELAY_MS);
   }
 
   let realtimeClient: RealtimeClient | null = null;
@@ -380,10 +402,15 @@ export async function createTwilioRealtimeBridge(
       if (evt.type === "input_audio_buffer.speech_started") {
         speechDetected = true;
         if (!voicemailMode) handleSpeechStartedEvent();
+        clearOutboundHumanGreetingTimer();
         // If we deferred for outbound waiting for speech (human), don't send normal greeting
         // if voicemailMode is already true or AMD unknown. We only send normal greeting when
         // voicemailMode is false and we explicitly decided to wait for speech.
-        if (deferInitialForOutbound && !initialUserMessageSent && voicemailMode) {
+        if (
+          deferInitialForOutbound &&
+          !initialUserMessageSent &&
+          voicemailMode
+        ) {
           // Do nothing; voicemail path will be handled by fallback timer
           return;
         }
@@ -433,6 +460,7 @@ export async function createTwilioRealtimeBridge(
       if (response.type === "input_audio_buffer.speech_started") {
         speechDetected = true;
         if (!voicemailMode) handleSpeechStartedEvent();
+        clearOutboundHumanGreetingTimer();
       }
       if (voicemailMode && response.type === "response.done") {
         tryCloseVoicemailAfterDrain("voicemail_complete");
@@ -460,6 +488,7 @@ export async function createTwilioRealtimeBridge(
         case "media": {
           if (isMediaEvent(twilioEvent)) {
             latestMediaTimestamp = Number(twilioEvent.media?.timestamp || 0);
+            lastAudioDeltaAtMs = Date.now();
             if (realtimeClient?.isConnected()) {
               const audioAppend = {
                 type: "input_audio_buffer.append",
@@ -484,7 +513,9 @@ export async function createTwilioRealtimeBridge(
             try {
               if (Array.isArray(rawCustomParams)) {
                 for (const p of rawCustomParams) {
-                  const key = ((p?.name ?? p?.key ?? "") as string).toLowerCase();
+                  const key = (
+                    (p?.name ?? p?.key ?? "") as string
+                  ).toLowerCase();
                   const value = ((p?.value ?? "") as string).toLowerCase();
                   rackyLog(
                     `[twilio] Processing parameter - key: "${key}", value: "${value}"`
@@ -511,7 +542,10 @@ export async function createTwilioRealtimeBridge(
                     );
                   }
                 }
-              } else if (rawCustomParams && typeof rawCustomParams === "object") {
+              } else if (
+                rawCustomParams &&
+                typeof rawCustomParams === "object"
+              ) {
                 for (const [k, v] of Object.entries(
                   rawCustomParams as Record<string, unknown>
                 )) {
@@ -556,8 +590,9 @@ export async function createTwilioRealtimeBridge(
                   shouldSendInitialOnConnect = true;
                 }
               } else {
-                // Wait for human speech; fallback to voicemail after timeout
+                // Wait for human speech; also schedule an early gentle greeting if no speech
                 deferInitialForOutbound = true;
+                scheduleOutboundHumanGreeting();
                 scheduleOutboundVoicemailFallback();
               }
             } else {

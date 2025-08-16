@@ -16,6 +16,8 @@ import {
   UiMessage,
 } from "../twilio/helpers";
 import { rackyLog } from "../utils/log";
+import { rateLimitConsume } from "../utils/rateLimiter";
+import { RL_TWILIO_CONVO_CAPACITY, RL_TWILIO_CONVO_INTERVAL_MS } from "../config/config";
 
 export async function handleTwilioConversationsWebhook(
   request: Request,
@@ -65,6 +67,14 @@ export async function handleTwilioConversationsWebhook(
           eventType !== "onConversationStateUpdated"
         )
           return;
+
+        // Per-conversation rate limiting to protect against bursts/loops
+        const bucketKey = `twilio-convo:${conversationSid}`;
+        const rl = await rateLimitConsume(env, bucketKey, RL_TWILIO_CONVO_CAPACITY, RL_TWILIO_CONVO_INTERVAL_MS);
+        if (!rl.allowed) {
+          rackyLog("[/twilio/convo][429] rate limited", { conversationSid, retryMs: rl.retryAfterMs });
+          return;
+        }
 
         if (eventType === "onConversationStateUpdated") {
           try {

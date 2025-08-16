@@ -6,7 +6,8 @@
     "start": "wrangler dev",
     "deploy": "wrangler deploy",
     "log": "npx wrangler tail",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "env": "npx wrangler secret put"
   },
   "keywords": [],
   "author": "",

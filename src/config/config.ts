@@ -4,7 +4,20 @@ export const DEBUG = true;
 export const MODEL = "gpt-4o-realtime-preview";
 export const OPENAI_URL = "wss://api.openai.com/v1/realtime";
 
-// Voice settings are defined in `config/voices.ts`
+export const ALLOWED_VOICES = [
+  "alloy",
+  "ash",
+  "ballad",
+  "coral",
+  "echo",
+  "sage", 
+  "shimmer",
+  "verse",
+] as const;
+
+export type VoiceName = (typeof ALLOWED_VOICES)[number];
+
+export const DEFAULT_VOICE: VoiceName = "echo";
 
 // Logging filters for realtime events
 export const LOG_EVENT_TYPES: ReadonlyArray<string> = [

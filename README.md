@@ -17,7 +17,7 @@ Cloudflare Worker for GateFrames that:
   - Uses Twilio conversation history for model context (remembers prior turns)
   - Idempotency: drops duplicates by `MessageSid` or `ConversationSid:MessageIndex`
 - Origin allowlist for non‑Twilio WS: GateFrames domains and localhost
-- In‑memory rate limits (per IP / per conversation)
+- Durable Object rate limits (per IP / per conversation)
 
 ## Endpoints
 - `POST /twilio/convo` — Twilio Conversations post‑webhook (enable onMessageAdded + onConversationStateUpdated)

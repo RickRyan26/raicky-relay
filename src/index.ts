@@ -1,7 +1,7 @@
 import type { Env } from "./config/env";
 import { isAllowedOrigin, RL_HTTP_CAPACITY, RL_HTTP_INTERVAL_MS, RL_WS_CAPACITY, RL_WS_INTERVAL_MS } from "./config/config";
 import { getClientIp } from "./utils/ip";
-import { rateLimitConsume } from "./utils/rateLimiter";
+import { rateLimitConsume, RateLimitBucket } from "./utils/rateLimiter";
 import { handleTwilioVoiceWebhook } from "./http/twilio";
 import { handleTwilioConversationsWebhook } from "./http/conversations";
 import { createRealtimeClient } from "./realtime/client";
@@ -23,7 +23,7 @@ export default {
       const origin = request.headers.get("Origin");
       if (!isAllowedOrigin(origin)) return new Response("Unauthorized origin", { status: 403 });
 
-      const rl = rateLimitConsume(`ws:${clientIp}`, RL_WS_CAPACITY, RL_WS_INTERVAL_MS);
+      const rl = await rateLimitConsume(env, `ws:${clientIp}`, RL_WS_CAPACITY, RL_WS_INTERVAL_MS);
       if (!rl.allowed) {
         const retrySec = Math.max(1, Math.ceil(rl.retryAfterMs / 1000));
         return new Response("Too Many Requests", { status: 429, headers: { "Retry-After": String(retrySec) } });
@@ -35,7 +35,7 @@ export default {
     if (pathname === "/twilio/convo" && request.method === "POST") return handleTwilioConversationsWebhook(request, env, ctx);
     if (pathname === "/twilio/voice" && (request.method === "POST" || request.method === "GET")) return handleTwilioVoiceWebhook(request, env);
 
-    const httpRl = rateLimitConsume(`http:${clientIp}`, RL_HTTP_CAPACITY, RL_HTTP_INTERVAL_MS);
+    const httpRl = await rateLimitConsume(env, `http:${clientIp}`, RL_HTTP_CAPACITY, RL_HTTP_INTERVAL_MS);
     if (!httpRl.allowed) {
       const retrySec = Math.max(1, Math.ceil(httpRl.retryAfterMs / 1000));
       return new Response("Too Many Requests", { status: 429, headers: { "Retry-After": String(retrySec) } });
@@ -51,5 +51,8 @@ export default {
     return new Response("Expected Upgrade: websocket", { status: 426 });
   },
 };
+
+// Re-export the Durable Object class for Wrangler to bind
+export { RateLimitBucket };
 
 

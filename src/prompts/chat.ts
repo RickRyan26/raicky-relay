@@ -1,12 +1,12 @@
-export const BRAND_NAME = "GateFrames.com";
+export const BRAND = "GateFrames.com";
 
 export function buildInitialCallGreeting(options: {
   voicemailMode: boolean;
   callDirection: "inbound" | "outbound" | "unknown";
 }): string {
-  const greeting = `Hey there! This is the "${BRAND_NAME}" A.I. assistant.`;
+  const greeting = `Hey there! This is the ${BRAND} A.I. assistant.`;
   if (options.voicemailMode) {
-    return `leave a voicemail with "${greeting} Sorry I missed you! I'll just leave a quick voicemail. If you have any questions about our gates, openers, or anything else, just call back or shoot me a text and I'll help right away."`;
+    return `Leave a voicemail message with "${greeting} Sorry I missed you! I'll just leave a quick voicemail. If you have any questions about our gates, openers, or anything else, just call back or shoot me a text and I'll help right away."`;
   }
 
   if (options.callDirection === "inbound") {
@@ -21,16 +21,16 @@ export function buildInitialCallGreeting(options: {
 export function chatPrompt(currentIsoTimestamp: string): string {
   return `Voice: Be conversational, warm, and relaxed - like talking to a knowledgeable friend who happens to know a lot about gates.
     
-    Role: You're a expert on driveway gates and home improvement who works with "${BRAND_NAME}".
+    Role: You're a expert on driveway gates and home improvement who works with "${BRAND}".
     
-    Objective: Have a natural conversation to understand what the customer needs, share helpful info, and guide them to the right "${BRAND_NAME}" solution when appropriate.
+    Objective: Have a natural conversation to understand what the customer needs, share helpful info, and guide them to the right "${BRAND}" solution when appropriate.
     
     Conversational Scope: 
     - You can chat about general topics like weather, how their day is going, home projects, etc.
-    - When ANY business, product, or purchase-related topic comes up, it MUST relate to "${BRAND_NAME}" products only
+    - When ANY business, product, or purchase-related topic comes up, it MUST relate to "${BRAND}" products only
     - If they ask about non-GateFrames products/services, be friendly but honest: "I'd love to help, but I'm specifically here for gate-related stuff. Speaking of which..."
     
-    Knowledge: ${BRAND_NAME} started with a simple idea - make high-quality custom gates and fences, deliver them free across America, and provide DIY guides that actually make sense.
+    Knowledge: ${BRAND} started with a simple idea - make high-quality custom gates and fences, deliver them free across America, and provide DIY guides that actually make sense.
     
     Guidelines:
     - Start casual, find out what brought them here
@@ -52,7 +52,27 @@ export function textConcatPrompt(basePrompt: string): string {
 export function realtimeConcatPrompt(basePrompt: string): string {
   return `Speed: Speak fast!
  
-  Voicemail Rule (CRITICAL): Voicemails are super brief - just say who you are ("${BRAND_NAME}" A.I. assistant), that you missed them, and they can call/text back. That's it!
+  Voicemail Rule (CRITICAL): Voicemails are super brief - just say who you are ("${BRAND}" A.I. assistant), that you missed them, and they can call/text back. That's it!
    
   ${basePrompt}`;
 }
+
+// Test function to verify voicemail greeting logic
+// export function testVoicemailGreeting() {
+//   console.log("Testing voicemail greetings:");
+  
+//   const testCases = [
+//     { voicemailMode: true, callDirection: "inbound" as const, expected: "voicemail message" },
+//     { voicemailMode: false, callDirection: "inbound" as const, expected: "inbound greeting" },
+//     { voicemailMode: false, callDirection: "outbound" as const, expected: "outbound greeting" },
+//     { voicemailMode: false, callDirection: "unknown" as const, expected: "fallback greeting" }
+//   ];
+  
+//   testCases.forEach((test, i) => {
+//     const result = buildInitialCallGreeting(test);
+//     console.log(`Test ${i + 1}: voicemailMode=${test.voicemailMode}, direction=${test.callDirection}`);
+//     console.log(`Result: ${result}`);
+//     console.log(`Expected: ${test.expected}`);
+//     console.log("---");
+//   });
+// }

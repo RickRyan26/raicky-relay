@@ -43,6 +43,10 @@ export async function handleTwilioVoiceWebhook(
 
   const amdValue = answeredBy ?? "unknown";
   relayUrl += `&direction=${direction}`;
+  
+  // Debug logging to see what AMD values we're getting
+  console.log(`[twilio-webhook] AnsweredBy: "${answeredBy}", AMD value: "${amdValue}", Direction: "${direction}"`);
+  
   const twiml = buildTwimlConnectStream(relayUrl, { amd: amdValue });
 
   return new Response(twiml, { headers: { "Content-Type": "text/xml" } });

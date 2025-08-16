@@ -1,8 +1,21 @@
-import type { Env } from "../config/env";
-import { ensureBotParticipant, fetchConversationHistoryAsUiMessages, parseCallNumbers, parseGroupNumbers, twilioGet, twilioPost, cleanseGroupMentions, UiMessage, placeOutboundCalls, createConversationWithParticipants, sanitizeUsNumber } from "../twilio/helpers";
 import { BOT_IDENTITY, CONVO_CONTEXT_LIMIT } from "../config/config";
-import { owrLog, owrError } from "../utils/log";
+import type { Env } from "../config/env";
 import { generateTextDirect } from "../openai/text";
+import { chatPrompt } from "../prompts/chat";
+import {
+  cleanseGroupMentions,
+  createConversationWithParticipants,
+  ensureBotParticipant,
+  fetchConversationHistoryAsUiMessages,
+  parseCallNumbers,
+  parseGroupNumbers,
+  placeOutboundCalls,
+  sanitizeUsNumber,
+  twilioGet,
+  twilioPost,
+  UiMessage,
+} from "../twilio/helpers";
+import { owrLog } from "../utils/log";
 
 export async function handleTwilioConversationsWebhook(
   request: Request,
@@ -15,9 +28,17 @@ export async function handleTwilioConversationsWebhook(
   const messageSid = (form.get("MessageSid") as string | null) || null;
   const messageIndex = (form.get("MessageIndex") as string | null) || null;
   let author = ((form.get("Author") as string | null) || "").toLowerCase();
-  let body = (form.get("Body") as string | null) || (form.get("MessageBody") as string | null) || "";
+  let body =
+    (form.get("Body") as string | null) ||
+    (form.get("MessageBody") as string | null) ||
+    "";
 
-  owrLog("[/twilio/convo]", { eventType, conversationSid, author, hasBody: Boolean(body) });
+  owrLog("[/twilio/convo]", {
+    eventType,
+    conversationSid,
+    author,
+    hasBody: Boolean(body),
+  });
 
   const resp = new Response("ok", { status: 200 });
 
@@ -29,22 +50,40 @@ export async function handleTwilioConversationsWebhook(
   for (const [k, ts] of processed) {
     if (now - ts > 10 * 60 * 1000) processed.delete(k);
   }
-  const dedupeKey = messageSid || (conversationSid && messageIndex ? `${conversationSid}:${messageIndex}` : null);
+  const dedupeKey =
+    messageSid ||
+    (conversationSid && messageIndex
+      ? `${conversationSid}:${messageIndex}`
+      : null);
 
   ctx.waitUntil(
     (async () => {
       try {
         if (!conversationSid) return;
-        if (eventType !== "onMessageAdded" && eventType !== "onConversationStateUpdated") return;
+        if (
+          eventType !== "onMessageAdded" &&
+          eventType !== "onConversationStateUpdated"
+        )
+          return;
 
-        if (eventType === 'onConversationStateUpdated') {
+        if (eventType === "onConversationStateUpdated") {
           try {
-            const msgRes = await twilioGet(env, `/Conversations/${conversationSid}/Messages?PageSize=1`);
-            const msgJson = (await msgRes.json()) as { messages?: Array<{ author?: string; body?: string; index?: number; sid?: string }> };
+            const msgRes = await twilioGet(
+              env,
+              `/Conversations/${conversationSid}/Messages?PageSize=1`
+            );
+            const msgJson = (await msgRes.json()) as {
+              messages?: Array<{
+                author?: string;
+                body?: string;
+                index?: number;
+                sid?: string;
+              }>;
+            };
             const latest = (msgJson.messages || [])[0];
             if (latest) {
-              author = (latest.author || '').toLowerCase();
-              body = latest.body || '';
+              author = (latest.author || "").toLowerCase();
+              body = latest.body || "";
             }
           } catch {}
         }
@@ -53,7 +92,7 @@ export async function handleTwilioConversationsWebhook(
         if (author === BOT_IDENTITY || author === "system") return;
 
         if (dedupeKey && processed.has(dedupeKey)) {
-          owrLog('[dedupe] already processed', dedupeKey);
+          owrLog("[dedupe] already processed", dedupeKey);
           return;
         }
         if (dedupeKey) processed.set(dedupeKey, now);
@@ -65,29 +104,60 @@ export async function handleTwilioConversationsWebhook(
           const voiceUrl = `${origin}/twilio/voice`;
           const started = await placeOutboundCalls(env, e164Targets, voiceUrl);
           const humanList = e164Targets.join(", ");
-          const ack = started.length > 0 ? `Calling ${humanList} now!` : `Sorry, I couldn't call ${humanList}`;
+          const ack =
+            started.length > 0
+              ? `Calling ${humanList} now!`
+              : `Sorry, I couldn't call ${humanList}`;
           await ensureBotParticipant(env, conversationSid);
-          await twilioPost(env, `/Conversations/${conversationSid}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: ack }));
+          await twilioPost(
+            env,
+            `/Conversations/${conversationSid}/Messages`,
+            new URLSearchParams({ Author: BOT_IDENTITY, Body: ack })
+          );
           return;
         }
 
         const groupTargets = parseGroupNumbers(body);
         if (groupTargets.length > 0) {
-          const authorE164 = author.startsWith('+1') ? author : (author.startsWith('+') ? author : `+1${sanitizeUsNumber(author) || ''}`);
+          const authorE164 = author.startsWith("+1")
+            ? author
+            : author.startsWith("+")
+            ? author
+            : `+1${sanitizeUsNumber(author) || ""}`;
           const othersE164 = groupTargets.map((ten) => `+1${ten}`);
           const all = [authorE164, ...othersE164].filter(Boolean) as string[];
-          const ch = await createConversationWithParticipants(env, all, `GF Group ${new Date().toISOString()}`);
-          const ack = ch ? `I created a new group and sent an intro message. You should see it as a new thread.` : `Sorry, I couldn't create the group.`;
+          const ch = await createConversationWithParticipants(
+            env,
+            all,
+            `GF Group ${new Date().toISOString()}`
+          );
+          const ack = ch
+            ? `I created a new group and sent an intro message. You should see it as a new thread.`
+            : `Sorry, I couldn't create the group.`;
           await ensureBotParticipant(env, conversationSid);
-          await twilioPost(env, `/Conversations/${conversationSid}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: ack }));
+          await twilioPost(
+            env,
+            `/Conversations/${conversationSid}/Messages`,
+            new URLSearchParams({ Author: BOT_IDENTITY, Body: ack })
+          );
           return;
         }
 
         let isGroup = false;
         try {
-          const partsRes = await twilioGet(env, `/Conversations/${conversationSid}/Participants`);
-          const parts = (await partsRes.json()) as { participants?: Array<{ identity?: string }> };
-          const nonBot = (parts.participants || []).filter((p) => ![BOT_IDENTITY, "system"].includes((p.identity || "").toLowerCase()));
+          const partsRes = await twilioGet(
+            env,
+            `/Conversations/${conversationSid}/Participants`
+          );
+          const parts = (await partsRes.json()) as {
+            participants?: Array<{ identity?: string }>;
+          };
+          const nonBot = (parts.participants || []).filter(
+            (p) =>
+              ![BOT_IDENTITY, "system"].includes(
+                (p.identity || "").toLowerCase()
+              )
+          );
           isGroup = nonBot.length >= 2;
         } catch {}
         if (isGroup && !/(^|\s)@ai(\b|\s|:)/i.test(body)) return;
@@ -96,46 +166,63 @@ export async function handleTwilioConversationsWebhook(
 
         let reply = `Sorry, I'm currently under maintenance..`;
         try {
-          const history: UiMessage[] = await fetchConversationHistoryAsUiMessages(env, conversationSid, { isGroup, limit: CONVO_CONTEXT_LIMIT });
+          const history: UiMessage[] =
+            await fetchConversationHistoryAsUiMessages(env, conversationSid, {
+              isGroup,
+              limit: CONVO_CONTEXT_LIMIT,
+            });
           const incomingUserTextRaw = (body || "").trim();
-          const incomingUserText = (isGroup ? cleanseGroupMentions(incomingUserTextRaw) : incomingUserTextRaw).trim();
+          const incomingUserText = (
+            isGroup
+              ? cleanseGroupMentions(incomingUserTextRaw)
+              : incomingUserTextRaw
+          ).trim();
 
-          let messages: UiMessage[] = [];
-          if (history.length > 0) {
-            const historyLines: string[] = [];
-            for (let i = 0; i < history.length; i++) {
-              const m = history[i];
-              const text = (m.parts?.[0]?.text || "").trim();
-              if (!text) continue;
-              const isLast = i === history.length - 1;
-              if (isLast && m.role === "user" && text === incomingUserText) continue;
-              const label = m.role === "assistant" ? "Assistant" : m.role === "system" ? "System" : "User";
-              historyLines.push(`${label}: ${text}`);
-            }
-            if (historyLines.length > 0) {
-              messages.push({ id: crypto.randomUUID(), role: "system", parts: [{ type: "text", text: `Conversation history (most recent last):\n${historyLines.join("\n")}` }] });
-            }
+          // Build messages from actual history roles; drop duplicate latest user turn
+          const messages: UiMessage[] = [];
+          for (let i = 0; i < history.length; i++) {
+            const m = history[i];
+            const text = (m.parts?.[0]?.text || "").trim();
+            if (!text) continue;
+            const isLast = i === history.length - 1;
+            if (isLast && m.role === "user" && text === incomingUserText)
+              continue;
+            messages.push(m);
           }
-          if (incomingUserText) {
-            messages.push({ id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: incomingUserText }] });
-          }
-          if (messages.length === 0) {
-            messages = [{ id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: incomingUserText || "" }] }];
-          }
+          // Append latest user message last
+          messages.push({
+            id: crypto.randomUUID(),
+            role: "user",
+            parts: [{ type: "text", text: incomingUserText }],
+          });
 
           const timeStamp = new Date().toISOString();
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          reply = await generateTextDirect(env, messages, `You are the GateFrames AI assistant. The current date is ${timeStamp}. Reply briefly.`);
+          reply = await generateTextDirect(
+            env,
+            messages,
+            chatPrompt(timeStamp)
+          );
         } catch {}
 
-        await twilioPost(env, `/Conversations/${conversationSid}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: reply }));
+        await twilioPost(
+          env,
+          `/Conversations/${conversationSid}/Messages`,
+          new URLSearchParams({ Author: BOT_IDENTITY, Body: reply })
+        );
       } catch (e) {
-        try { await twilioPost(env, `/Conversations/${conversationSid}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: `Sorry, I'm currently under maintenance...` })); } catch {}
+        try {
+          await twilioPost(
+            env,
+            `/Conversations/${conversationSid}/Messages`,
+            new URLSearchParams({
+              Author: BOT_IDENTITY,
+              Body: `Sorry, I'm currently under maintenance...`,
+            })
+          );
+        } catch {}
       }
     })()
   );
 
   return resp;
 }
-
-

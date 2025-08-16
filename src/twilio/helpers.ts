@@ -158,6 +158,15 @@ export function cleanseGroupMentions(text: string): string {
   return text.replace(/(^|\s)@ai(\b|:)?/gi, " ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Returns a short, non-sensitive label for a group participant (e.g., …7449)
+ */
+export function authorShortLabel(author: string): string {
+  const digits = (author || '').replace(/\D/g, '');
+  if (digits.length >= 4) return `…${digits.slice(-4)}`;
+  return author || 'user';
+}
+
 export function mapTwilioToUiMessage(
   msg: { sid?: string; author?: string; body?: string; index?: number },
   opts: { isGroup: boolean }
@@ -168,7 +177,8 @@ export function mapTwilioToUiMessage(
   let role: UiMessageRole = "user";
   if (author === BOT_IDENTITY) role = "assistant";
   else if (author === "system") role = "system";
-  const text = opts.isGroup && role === "user" ? cleanseGroupMentions(textRaw) : textRaw;
+  const base = opts.isGroup && role === "user" ? cleanseGroupMentions(textRaw) : textRaw;
+  const text = opts.isGroup && role === 'user' ? `[${authorShortLabel(author)}] ${base}` : base;
   if (!text) return null;
   return {
     id: msg.sid || String(msg.index ?? crypto.randomUUID()),

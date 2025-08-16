@@ -1,7 +1,7 @@
 import type { Env } from "../config/env";
 import { encodeBase64UrlUtf8 } from "../utils/base64";
 import { buildTwimlConnectStream } from "../utils/xml";
-import { externalChatPrompt, buildInitialCallGreeting, realtimeConcatPrompt } from "../prompts/chat";
+import { chatPrompt, buildInitialCallGreeting, realtimeConcatPrompt } from "../prompts/chat";
 import { generateRelayAuthToken } from "../tokens/relay";
 
 export async function handleTwilioVoiceWebhook(
@@ -37,7 +37,7 @@ export async function handleTwilioVoiceWebhook(
   const amdValue = answeredBy ?? 'unknown';
   const voicemailMode = amdValue.includes('machine');
 
-  const sysB64 = encodeBase64UrlUtf8(realtimeConcatPrompt(externalChatPrompt(new Date().toISOString())));
+  const sysB64 = encodeBase64UrlUtf8(realtimeConcatPrompt(chatPrompt(new Date().toISOString())));
   const greetB64 = encodeBase64UrlUtf8(buildInitialCallGreeting({ voicemailMode, callDirection: direction }));
 
   const twiml = buildTwimlConnectStream(relayUrl, { amd: amdValue, direction, sys: sysB64, greet: greetB64 });

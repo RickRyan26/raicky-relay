@@ -514,10 +514,15 @@ async function encryptAesGcm(data: Uint8Array, keyBytes: Uint8Array): Promise<Ui
     cryptoKey,
     data.buffer as ArrayBuffer
   );
-  const result = new Uint8Array(16 + encrypted.byteLength + 16);
+  // WebCrypto returns ciphertext||authTag; split out the tag and construct: iv || ciphertext || authTag
+  const encBytes = new Uint8Array(encrypted);
+  if (encBytes.length < 17) throw new Error("encrypt failed");
+  const tag = encBytes.slice(encBytes.length - 16);
+  const ciphertext = encBytes.slice(0, encBytes.length - 16);
+  const result = new Uint8Array(16 + ciphertext.length + 16);
   result.set(iv, 0);
-  result.set(new Uint8Array(encrypted), 16);
-  // Note: AES-GCM automatically appends the auth tag
+  result.set(ciphertext, 16);
+  result.set(tag, 16 + ciphertext.length);
   return result;
 }
 

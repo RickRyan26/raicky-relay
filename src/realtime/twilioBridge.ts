@@ -1,22 +1,53 @@
 import { RealtimeClient } from "@openai/realtime-api-beta";
 import type { Env } from "../config/env";
 import { DEFAULT_VOICE, VoiceName } from "../config/voices";
-import { LOG_EVENT_TYPES, MODEL, OPENAI_URL, SHOW_TIMING_MATH, TIME_LIMIT_MS, FINAL_TIME_LIMIT_MESSAGE } from "../config/config";
+import {
+  LOG_EVENT_TYPES,
+  MODEL,
+  OPENAI_URL,
+  SHOW_TIMING_MATH,
+  TIME_LIMIT_MS,
+  FINAL_TIME_LIMIT_MESSAGE,
+} from "../config/config";
 import { rackyError, rackyLog } from "../utils/log";
 import { getAuthToken, validateAuth } from "../utils/auth";
-import { chatPrompt, realtimeConcatPrompt, buildInitialCallGreeting } from "../prompts/chat";
+import {
+  chatPrompt,
+  realtimeConcatPrompt,
+  buildInitialCallGreeting,
+} from "../prompts/chat";
 
 type NullableString = string | null;
 type TwilioBaseEvent = { event: string };
 type TwilioCustomParameter = { name?: string; key?: string; value?: string };
-type TwilioStartEvent = { event: "start"; start?: { streamSid?: string | null; customParameters?: TwilioCustomParameter[]; custom_parameters?: TwilioCustomParameter[] } };
-type TwilioMediaEvent = { event: "media"; media?: { payload?: string; timestamp?: number | string } };
+type TwilioStartEvent = {
+  event: "start";
+  start?: {
+    streamSid?: string | null;
+    customParameters?: TwilioCustomParameter[];
+    custom_parameters?: TwilioCustomParameter[];
+  };
+};
+type TwilioMediaEvent = {
+  event: "media";
+  media?: { payload?: string; timestamp?: number | string };
+};
 type TwilioMarkEvent = { event: "mark" };
-type TwilioEvent = TwilioStartEvent | TwilioMediaEvent | TwilioMarkEvent | TwilioBaseEvent;
+type TwilioEvent =
+  | TwilioStartEvent
+  | TwilioMediaEvent
+  | TwilioMarkEvent
+  | TwilioBaseEvent;
 
-function isMediaEvent(e: TwilioEvent): e is TwilioMediaEvent { return e.event === "media"; }
-function isStartEvent(e: TwilioEvent): e is TwilioStartEvent { return e.event === "start"; }
-function isMarkEvent(e: TwilioEvent): e is TwilioMarkEvent { return e.event === "mark"; }
+function isMediaEvent(e: TwilioEvent): e is TwilioMediaEvent {
+  return e.event === "media";
+}
+function isStartEvent(e: TwilioEvent): e is TwilioStartEvent {
+  return e.event === "start";
+}
+function isMarkEvent(e: TwilioEvent): e is TwilioMarkEvent {
+  return e.event === "mark";
+}
 
 export async function createTwilioRealtimeBridge(
   request: Request,
@@ -35,27 +66,52 @@ export async function createTwilioRealtimeBridge(
   const auth = getAuthToken(reqUrl);
   const authOk = await validateAuth(auth, env, "twilio");
   if (!authOk) {
-    try { serverSocket.close(1008, "Unauthorized"); } catch {}
-    return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
+    try {
+      serverSocket.close(1008, "Unauthorized");
+    } catch {}
+    return new Response(null, {
+      status: 101,
+      headers: responseHeaders,
+      webSocket: clientSocket,
+    });
   }
   const voiceParam = (reqUrl.searchParams.get("voice") || "").toLowerCase();
-  const directionParam = (reqUrl.searchParams.get("direction") || "").toLowerCase();
+  const directionParam = (
+    reqUrl.searchParams.get("direction") || ""
+  ).toLowerCase();
   let systemInstructionsOverride: string | null = null;
   let initialGreetingOverride: string | null = null;
   let voicemailMode = false;
-  let callDirection: 'inbound' | 'outbound' | 'unknown' = 'unknown';
-  const selectedVoice: VoiceName = (['alloy','ash','ballad','coral','echo','sage','shimmer','verse'] as const).includes(
-    voiceParam as VoiceName
-  ) ? (voiceParam as VoiceName) : DEFAULT_VOICE;
+  let callDirection: "inbound" | "outbound" | "unknown" = "unknown";
+  const selectedVoice: VoiceName = (
+    [
+      "alloy",
+      "ash",
+      "ballad",
+      "coral",
+      "echo",
+      "sage",
+      "shimmer",
+      "verse",
+    ] as const
+  ).includes(voiceParam as VoiceName)
+    ? (voiceParam as VoiceName)
+    : DEFAULT_VOICE;
 
-  if (directionParam === 'inbound' || directionParam === 'outbound') {
-    callDirection = directionParam as 'inbound' | 'outbound';
+  if (directionParam === "inbound" || directionParam === "outbound") {
+    callDirection = directionParam as "inbound" | "outbound";
   }
 
   if (!apiKey) {
     rackyError("Missing OpenAI API key. Did you forget to set OPENAI_API_KEY?");
-    try { serverSocket.close(1011, "Server misconfigured: missing API key"); } catch {}
-    return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
+    try {
+      serverSocket.close(1011, "Server misconfigured: missing API key");
+    } catch {}
+    return new Response(null, {
+      status: 101,
+      headers: responseHeaders,
+      webSocket: clientSocket,
+    });
   }
 
   let streamSid: NullableString = null;
@@ -73,21 +129,32 @@ export async function createTwilioRealtimeBridge(
     timeLimitClosing = true;
     try {
       const item = {
-        type: 'conversation.item.create',
+        type: "conversation.item.create",
         item: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: `Please say exactly: ${FINAL_TIME_LIMIT_MESSAGE}` }]
-        }
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `Please say exactly: ${FINAL_TIME_LIMIT_MESSAGE}`,
+            },
+          ],
+        },
       } as const;
-      realtimeClient!.realtime.send('conversation.item.create', item);
-      realtimeClient!.realtime.send('response.create', { type: 'response.create' });
+      realtimeClient!.realtime.send("conversation.item.create", item);
+      realtimeClient!.realtime.send("response.create", {
+        type: "response.create",
+      });
     } catch {}
     try {
       if (timeLimitCloseFallback) clearTimeout(timeLimitCloseFallback);
       timeLimitCloseFallback = setTimeout(() => {
-        try { serverSocket.close(1000, 'time_limit'); } catch {}
-        try { realtimeClient?.disconnect(); } catch {}
+        try {
+          serverSocket.close(1000, "time_limit");
+        } catch {}
+        try {
+          realtimeClient?.disconnect();
+        } catch {}
       }, 20_000);
     } catch {}
   }
@@ -95,18 +162,30 @@ export async function createTwilioRealtimeBridge(
   function scheduleTimeLimit() {
     try {
       if (timeLimitTimer) clearTimeout(timeLimitTimer);
-      timeLimitTimer = setTimeout(() => { sendFinalAndClose(); }, TIME_LIMIT_MS);
+      timeLimitTimer = setTimeout(() => {
+        sendFinalAndClose();
+      }, TIME_LIMIT_MS);
     } catch {}
   }
 
   let realtimeClient: RealtimeClient | null = null;
   try {
     rackyLog("Creating OpenAIRealtimeClient (Twilio mode)");
-    realtimeClient = new RealtimeClient({ apiKey, debug: true, url: OPENAI_URL });
+    realtimeClient = new RealtimeClient({
+      apiKey,
+      debug: true,
+      url: OPENAI_URL,
+    });
   } catch (e) {
     rackyError("Error creating OpenAI RealtimeClient (Twilio mode)", e);
-    try { serverSocket.close(1011, "Upstream client init failure"); } catch {}
-    return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
+    try {
+      serverSocket.close(1011, "Upstream client init failure");
+    } catch {}
+    return new Response(null, {
+      status: 101,
+      headers: responseHeaders,
+      webSocket: clientSocket,
+    });
   }
 
   function initializeSession() {
@@ -132,32 +211,38 @@ export async function createTwilioRealtimeBridge(
   function sendInitialConversationItem() {
     if (initialUserMessageSent) return;
     initialUserMessageSent = true;
-    const initialMessage = initialGreetingOverride ?? '';
+    const initialMessage = initialGreetingOverride ?? "";
     if (!initialMessage) return;
-    
-    // For voicemail mode, we want the AI to speak immediately and concisely
-    // For regular calls, we want the AI to greet the user immediately
-    const conversationText = voicemailMode 
-      ? `VOICEMAIL MODE: You must speak immediately. ${initialMessage} Then wait for the response.done event to end the call.`
-      : `IMMEDIATE GREETING: You must speak this greeting right now: ${initialMessage}. Do not wait, speak immediately.`;
-    
+
     const initialConversationItem = {
       type: "conversation.item.create",
       item: {
         type: "message",
         role: "user",
-        content: [ { type: "input_text", text: conversationText } ],
+        content: [{ type: "input_text", text: initialMessage }],
       },
     } as const;
-    realtimeClient!.realtime.send("conversation.item.create", initialConversationItem);
-    realtimeClient!.realtime.send("response.create", { type: "response.create" });
-    
-    rackyLog(`Sent initial conversation item (voicemailMode: ${voicemailMode}):`, conversationText);
+    realtimeClient!.realtime.send(
+      "conversation.item.create",
+      initialConversationItem
+    );
+    realtimeClient!.realtime.send("response.create", {
+      type: "response.create",
+    });
+
+    rackyLog(
+      `Sent initial conversation item (voicemailMode: ${voicemailMode}):`,
+      initialMessage
+    );
   }
 
   function sendMark() {
     if (!streamSid) return;
-    const markEvent = { event: "mark", streamSid, mark: { name: "responsePart" } } as const;
+    const markEvent = {
+      event: "mark",
+      streamSid,
+      mark: { name: "responsePart" },
+    } as const;
     serverSocket.send(JSON.stringify(markEvent));
     markQueue.push("responsePart");
   }
@@ -166,11 +251,21 @@ export async function createTwilioRealtimeBridge(
     if (markQueue.length > 0 && responseStartTimestampTwilio != null) {
       const elapsedTime = latestMediaTimestamp - responseStartTimestampTwilio;
       if (SHOW_TIMING_MATH) {
-        console.log(`Calculating elapsed time for truncation: ${latestMediaTimestamp} - ${responseStartTimestampTwilio} = ${elapsedTime}ms`);
+        console.log(
+          `Calculating elapsed time for truncation: ${latestMediaTimestamp} - ${responseStartTimestampTwilio} = ${elapsedTime}ms`
+        );
       }
       if (lastAssistantItem) {
-        const truncateEvent = { type: "conversation.item.truncate", item_id: lastAssistantItem, content_index: 0, audio_end_ms: elapsedTime } as const;
-        realtimeClient!.realtime.send("conversation.item.truncate", truncateEvent);
+        const truncateEvent = {
+          type: "conversation.item.truncate",
+          item_id: lastAssistantItem,
+          content_index: 0,
+          audio_end_ms: elapsedTime,
+        } as const;
+        realtimeClient!.realtime.send(
+          "conversation.item.truncate",
+          truncateEvent
+        );
       }
       serverSocket.send(JSON.stringify({ event: "clear", streamSid }));
       markQueue = [];
@@ -181,12 +276,22 @@ export async function createTwilioRealtimeBridge(
 
   realtimeClient.realtime.on("server.*", (evt: { type: string }) => {
     try {
-      if (evt.type && LOG_EVENT_TYPES.includes(evt.type)) rackyLog(`Received event from OpenAI: ${evt.type}`);
-      if ((evt as unknown as { type?: string; delta?: string }).type === "response.audio.delta" && (evt as unknown as { delta?: string }).delta) {
+      if (evt.type && LOG_EVENT_TYPES.includes(evt.type))
+        rackyLog(`Received event from OpenAI: ${evt.type}`);
+      if (
+        (evt as unknown as { type?: string; delta?: string }).type ===
+          "response.audio.delta" &&
+        (evt as unknown as { delta?: string }).delta
+      ) {
         const { delta } = evt as unknown as { delta: string };
-        const audioDelta = { event: "media", streamSid, media: { payload: delta } } as const;
+        const audioDelta = {
+          event: "media",
+          streamSid,
+          media: { payload: delta },
+        } as const;
         serverSocket.send(JSON.stringify(audioDelta));
-        if (!responseStartTimestampTwilio) responseStartTimestampTwilio = latestMediaTimestamp;
+        if (!responseStartTimestampTwilio)
+          responseStartTimestampTwilio = latestMediaTimestamp;
         const itemId = (evt as unknown as { item_id?: string }).item_id;
         if (itemId) lastAssistantItem = itemId;
         sendMark();
@@ -195,53 +300,79 @@ export async function createTwilioRealtimeBridge(
         if (!voicemailMode) handleSpeechStartedEvent();
       }
       if (voicemailMode && evt.type === "response.done") {
-        try { serverSocket.close(1000, "voicemail complete"); } catch {}
-        try { realtimeClient?.disconnect(); } catch {}
+        try {
+          serverSocket.close(1000, "voicemail complete");
+        } catch {}
+        try {
+          realtimeClient?.disconnect();
+        } catch {}
       }
-      if (timeLimitClosing && evt.type === 'response.done') {
-        try { serverSocket.close(1000, 'time_limit'); } catch {}
-        try { realtimeClient?.disconnect(); } catch {}
+      if (timeLimitClosing && evt.type === "response.done") {
+        try {
+          serverSocket.close(1000, "time_limit");
+        } catch {}
+        try {
+          realtimeClient?.disconnect();
+        } catch {}
       }
     } catch (error) {
       rackyError("Error processing OpenAI message (Twilio mode)", error);
     }
   });
 
-  (realtimeClient as unknown as { socket?: WebSocket }).socket?.addEventListener(
-    "message",
-    (event: MessageEvent) => {
-      try {
-        const raw = typeof event.data === "string" ? event.data : "";
-        if (!raw) return;
-        const response = JSON.parse(raw) as { type?: string; delta?: string; item_id?: string };
-        if (response.type && LOG_EVENT_TYPES.includes(response.type)) rackyLog(`OpenAI ws message: ${response.type}`);
-        if (response.type === "response.audio.delta" && response.delta) {
-          const audioDelta = { event: "media", streamSid, media: { payload: response.delta } } as const;
-          serverSocket.send(JSON.stringify(audioDelta));
-          if (!responseStartTimestampTwilio) responseStartTimestampTwilio = latestMediaTimestamp;
-          if (response.item_id) lastAssistantItem = response.item_id;
-          sendMark();
-        }
-        if (response.type === "input_audio_buffer.speech_started") {
-          if (!voicemailMode) handleSpeechStartedEvent();
-        }
-        if (voicemailMode && response.type === "response.done") {
-          try { serverSocket.close(1000, "voicemail complete"); } catch {}
-          try { realtimeClient?.disconnect(); } catch {}
-        }
-      } catch {}
-    }
-  );
+  (
+    realtimeClient as unknown as { socket?: WebSocket }
+  ).socket?.addEventListener("message", (event: MessageEvent) => {
+    try {
+      const raw = typeof event.data === "string" ? event.data : "";
+      if (!raw) return;
+      const response = JSON.parse(raw) as {
+        type?: string;
+        delta?: string;
+        item_id?: string;
+      };
+      if (response.type && LOG_EVENT_TYPES.includes(response.type))
+        rackyLog(`OpenAI ws message: ${response.type}`);
+      if (response.type === "response.audio.delta" && response.delta) {
+        const audioDelta = {
+          event: "media",
+          streamSid,
+          media: { payload: response.delta },
+        } as const;
+        serverSocket.send(JSON.stringify(audioDelta));
+        if (!responseStartTimestampTwilio)
+          responseStartTimestampTwilio = latestMediaTimestamp;
+        if (response.item_id) lastAssistantItem = response.item_id;
+        sendMark();
+      }
+      if (response.type === "input_audio_buffer.speech_started") {
+        if (!voicemailMode) handleSpeechStartedEvent();
+      }
+      if (voicemailMode && response.type === "response.done") {
+        try {
+          serverSocket.close(1000, "voicemail complete");
+        } catch {}
+        try {
+          realtimeClient?.disconnect();
+        } catch {}
+      }
+    } catch {}
+  });
 
   realtimeClient.realtime.on("close", (metadata: { error: boolean }) => {
-    rackyLog(`Closing server-side (Twilio mode) because I received a close event: (error: ${metadata.error})`);
-    try { serverSocket.close(); } catch {}
+    rackyLog(
+      `Closing server-side (Twilio mode) because I received a close event: (error: ${metadata.error})`
+    );
+    try {
+      serverSocket.close();
+    } catch {}
   });
 
   const twilioQueue: string[] = [];
   serverSocket.addEventListener("message", (event: MessageEvent) => {
     try {
-      const raw = typeof event.data === "string" ? event.data : event.data.toString();
+      const raw =
+        typeof event.data === "string" ? event.data : event.data.toString();
       const twilioEvent = JSON.parse(raw) as TwilioEvent;
       if (!realtimeClient?.isConnected()) twilioQueue.push(raw);
       switch (twilioEvent.event) {
@@ -249,8 +380,14 @@ export async function createTwilioRealtimeBridge(
           if (isMediaEvent(twilioEvent)) {
             latestMediaTimestamp = Number(twilioEvent.media?.timestamp || 0);
             if (realtimeClient?.isConnected()) {
-              const audioAppend = { type: "input_audio_buffer.append", audio: twilioEvent.media?.payload } as const;
-              realtimeClient.realtime.send("input_audio_buffer.append", audioAppend);
+              const audioAppend = {
+                type: "input_audio_buffer.append",
+                audio: twilioEvent.media?.payload,
+              } as const;
+              realtimeClient.realtime.send(
+                "input_audio_buffer.append",
+                audioAppend
+              );
             }
           }
           break;
@@ -258,7 +395,10 @@ export async function createTwilioRealtimeBridge(
         case "start": {
           if (isStartEvent(twilioEvent)) {
             streamSid = twilioEvent.start?.streamSid ?? null;
-            const customParams = twilioEvent.start?.customParameters || twilioEvent.start?.custom_parameters || [];
+            const customParams =
+              twilioEvent.start?.customParameters ||
+              twilioEvent.start?.custom_parameters ||
+              [];
             rackyLog("[twilio] start.customParameters:", customParams);
             for (const p of customParams) {
               const key = (p.name || p.key || "").toLowerCase();
@@ -266,24 +406,42 @@ export async function createTwilioRealtimeBridge(
               const lowerValue = rawValue.toLowerCase();
               if (key === "amd") {
                 voicemailMode = lowerValue.includes("machine");
-              } else if (key === 'direction') {
-                if (lowerValue === 'inbound' || lowerValue === 'outbound') callDirection = lowerValue as 'inbound' | 'outbound';
-              } else if (key === 'sys') {
-                try { systemInstructionsOverride = decodeBase64UrlUtf8(rawValue); } catch { systemInstructionsOverride = null; }
-                if (systemInstructionsOverride != null) {
-                  try { if (realtimeClient?.isConnected()) { realtimeClient.realtime.send('session.update', { type: 'session.update', session: { instructions: systemInstructionsOverride } }); } } catch {}
+              } else if (key === "direction") {
+                if (lowerValue === "inbound" || lowerValue === "outbound")
+                  callDirection = lowerValue as "inbound" | "outbound";
+              } else if (key === "sys") {
+                try {
+                  systemInstructionsOverride = decodeBase64UrlUtf8(rawValue);
+                } catch {
+                  systemInstructionsOverride = null;
                 }
-              } else if (key === 'greet') {
-                try { initialGreetingOverride = decodeBase64UrlUtf8(rawValue); } catch { initialGreetingOverride = null; }
+                if (systemInstructionsOverride != null) {
+                  try {
+                    if (realtimeClient?.isConnected()) {
+                      realtimeClient.realtime.send("session.update", {
+                        type: "session.update",
+                        session: { instructions: systemInstructionsOverride },
+                      });
+                    }
+                  } catch {}
+                }
+              } else if (key === "greet") {
+                try {
+                  initialGreetingOverride = decodeBase64UrlUtf8(rawValue);
+                } catch {
+                  initialGreetingOverride = null;
+                }
               }
             }
             if (!initialGreetingOverride) {
-              const greetText = buildInitialCallGreeting({ voicemailMode, callDirection });
-              initialGreetingOverride = voicemailMode
-                ? greetText // For voicemail, use the greeting text directly - the VOICEMAIL MODE instruction will handle the rest
-                : greetText; // For regular calls, use the greeting text directly - the IMMEDIATE GREETING instruction will handle it
+              const greetText = buildInitialCallGreeting({
+                voicemailMode,
+                callDirection,
+              });
+              initialGreetingOverride = greetText;
             }
-            if (realtimeClient?.isConnected()) sendInitialConversationItem(); else shouldSendInitialOnConnect = true;
+            if (realtimeClient?.isConnected()) sendInitialConversationItem();
+            else shouldSendInitialOnConnect = true;
           }
           responseStartTimestampTwilio = null;
           latestMediaTimestamp = 0;
@@ -292,11 +450,16 @@ export async function createTwilioRealtimeBridge(
           break;
         }
         case "mark": {
-          if (isMarkEvent(twilioEvent)) { if (markQueue.length > 0) markQueue.shift(); }
+          if (isMarkEvent(twilioEvent)) {
+            if (markQueue.length > 0) markQueue.shift();
+          }
           break;
         }
         default: {
-          rackyLog("Received non-media Twilio event:", (twilioEvent as TwilioBaseEvent).event);
+          rackyLog(
+            "Received non-media Twilio event:",
+            (twilioEvent as TwilioBaseEvent).event
+          );
           break;
         }
       }
@@ -306,10 +469,16 @@ export async function createTwilioRealtimeBridge(
   });
 
   serverSocket.addEventListener("close", () => {
-    try { if (realtimeClient?.isConnected()) realtimeClient.disconnect(); } catch {}
+    try {
+      if (realtimeClient?.isConnected()) realtimeClient.disconnect();
+    } catch {}
     rackyLog("Twilio client disconnected.");
-    try { if (timeLimitTimer) clearTimeout(timeLimitTimer); } catch {}
-    try { if (timeLimitCloseFallback) clearTimeout(timeLimitCloseFallback); } catch {}
+    try {
+      if (timeLimitTimer) clearTimeout(timeLimitTimer);
+    } catch {}
+    try {
+      if (timeLimitCloseFallback) clearTimeout(timeLimitCloseFallback);
+    } catch {}
   });
 
   let shouldSendInitialOnConnect = false;
@@ -330,13 +499,13 @@ export async function createTwilioRealtimeBridge(
         await realtimeClient!.connect({ model: MODEL });
         rackyLog(`Connected to OpenAI successfully (Twilio mode)!`);
         initializeSession();
-        
+
         // Send initial conversation item immediately if needed
-        if (shouldSendInitialOnConnect) { 
-          sendInitialConversationItem(); 
-          shouldSendInitialOnConnect = false; 
+        if (shouldSendInitialOnConnect) {
+          sendInitialConversationItem();
+          shouldSendInitialOnConnect = false;
         }
-        
+
         // If we have streamSid but haven't sent initial message yet, send it now
         // This ensures AI speaks immediately even if connection timing is off
         if (streamSid && !initialUserMessageSent && initialGreetingOverride) {
@@ -349,19 +518,29 @@ export async function createTwilioRealtimeBridge(
           try {
             const eventParsed = JSON.parse(msg) as TwilioEvent;
             if (isMediaEvent(eventParsed)) {
-              const audioAppend = { type: "input_audio_buffer.append", audio: eventParsed.media?.payload } as const;
-              realtimeClient!.realtime.send("input_audio_buffer.append", audioAppend);
+              const audioAppend = {
+                type: "input_audio_buffer.append",
+                audio: eventParsed.media?.payload,
+              } as const;
+              realtimeClient!.realtime.send(
+                "input_audio_buffer.append",
+                audioAppend
+              );
             }
           } catch {}
         }
       } catch (e) {
         rackyError("Error connecting to OpenAI (Twilio mode)", e);
-        try { serverSocket.close(1011, "Upstream connect failure"); } catch {}
+        try {
+          serverSocket.close(1011, "Upstream connect failure");
+        } catch {}
       }
     })()
   );
 
-  return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
+  return new Response(null, {
+    status: 101,
+    headers: responseHeaders,
+    webSocket: clientSocket,
+  });
 }
-
-

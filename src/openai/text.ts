@@ -13,7 +13,7 @@ export async function generateTextDirect(
       content: msg.parts.map(part => part.text).join('')
     }));
 
-    const model = 'gpt-5';
+    const model = 'gpt-4o-mini';
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',

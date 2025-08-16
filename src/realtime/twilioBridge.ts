@@ -134,16 +134,25 @@ export async function createTwilioRealtimeBridge(
     initialUserMessageSent = true;
     const initialMessage = initialGreetingOverride ?? '';
     if (!initialMessage) return;
+    
+    // For voicemail mode, we want the AI to speak immediately and concisely
+    // For regular calls, we want the AI to greet the user immediately
+    const conversationText = voicemailMode 
+      ? `VOICEMAIL MODE: You must speak immediately. ${initialMessage} Then wait for the response.done event to end the call.`
+      : `IMMEDIATE GREETING: You must speak this greeting right now: ${initialMessage}. Do not wait, speak immediately.`;
+    
     const initialConversationItem = {
       type: "conversation.item.create",
       item: {
         type: "message",
         role: "user",
-        content: [ { type: "input_text", text: initialMessage } ],
+        content: [ { type: "input_text", text: conversationText } ],
       },
     } as const;
     realtimeClient!.realtime.send("conversation.item.create", initialConversationItem);
     realtimeClient!.realtime.send("response.create", { type: "response.create" });
+    
+    rackyLog(`Sent initial conversation item (voicemailMode: ${voicemailMode}):`, conversationText);
   }
 
   function sendMark() {
@@ -271,8 +280,8 @@ export async function createTwilioRealtimeBridge(
             if (!initialGreetingOverride) {
               const greetText = buildInitialCallGreeting({ voicemailMode, callDirection });
               initialGreetingOverride = voicemailMode
-                ? `Please say exactly: ${greetText}`
-                : `Greet the user with "${greetText}"`;
+                ? greetText // For voicemail, use the greeting text directly - the VOICEMAIL MODE instruction will handle the rest
+                : greetText; // For regular calls, use the greeting text directly - the IMMEDIATE GREETING instruction will handle it
             }
             if (realtimeClient?.isConnected()) sendInitialConversationItem(); else shouldSendInitialOnConnect = true;
           }
@@ -321,7 +330,19 @@ export async function createTwilioRealtimeBridge(
         await realtimeClient!.connect({ model: MODEL });
         rackyLog(`Connected to OpenAI successfully (Twilio mode)!`);
         initializeSession();
-        if (shouldSendInitialOnConnect) { sendInitialConversationItem(); shouldSendInitialOnConnect = false; }
+        
+        // Send initial conversation item immediately if needed
+        if (shouldSendInitialOnConnect) { 
+          sendInitialConversationItem(); 
+          shouldSendInitialOnConnect = false; 
+        }
+        
+        // If we have streamSid but haven't sent initial message yet, send it now
+        // This ensures AI speaks immediately even if connection timing is off
+        if (streamSid && !initialUserMessageSent && initialGreetingOverride) {
+          rackyLog("Forcing immediate initial greeting due to active stream");
+          sendInitialConversationItem();
+        }
         while (twilioQueue.length) {
           const msg = twilioQueue.shift();
           if (!msg) continue;

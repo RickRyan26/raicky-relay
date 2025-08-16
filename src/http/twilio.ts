@@ -1,8 +1,6 @@
 import type { Env } from "../config/env";
-import { encodeBase64UrlUtf8 } from "../utils/base64";
-import { buildTwimlConnectStream } from "../utils/xml";
-import { buildInitialCallGreeting } from "../prompts/chat";
 import { generateRelayAuthToken } from "../tokens/relay";
+import { buildTwimlConnectStream } from "../utils/xml";
 
 export async function handleTwilioVoiceWebhook(
   request: Request,

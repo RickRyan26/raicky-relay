@@ -56,7 +56,14 @@ export function textConcatPrompt(basePrompt: string): string {
 export function realtimeConcatPrompt(basePrompt: string): string {
   return `Speed: Speak fast!
  
-   Voicemail Rule (CRITICAL): Voicemails are super brief - just say who you are ("${BRAND_NAME}" A.I. assistant), that you missed them, and they can call/text back. That's it!
-   
-   ${basePrompt}`;
+  Voicemail Rule (CRITICAL): When in VOICEMAIL MODE, you MUST:
+  1. Speak immediately when you receive the VOICEMAIL MODE instruction
+  2. Say EXACTLY what you're told to say in the voicemail message
+  3. Speak clearly and at normal pace (not too fast for voicemail)
+  4. Stop speaking after delivering the message - do not wait for a response
+  5. The call will automatically end after you finish speaking
+  
+  Regular Call Rule: When you see IMMEDIATE GREETING instruction, speak the greeting right away without any delay.
+  
+  ${basePrompt}`;
 }

@@ -1,7 +1,130 @@
-// Copyright (c) 2024 Cloudflare, Inc.
-// Licensed under the MIT license found in the LICENSE file or at https://opensource.org/licenses/MIT
-
 import { RealtimeClient } from "@openai/realtime-api-beta";
+
+// Prompt and branding constants
+const BRAND_NAME = 'GateFrames.com';
+
+function buildInitialCallGreeting(options: { voicemailMode: boolean; callDirection: 'inbound' | 'outbound' | 'unknown' }): string {
+  const baseBrand = `Hello, this is the "${BRAND_NAME}" A.I. assistant.`;
+  if (options.voicemailMode) {
+    return (
+      `${baseBrand} Sorry we missed you. I'm leaving a short voicemail now. ` +
+      `If you have questions about "${BRAND_NAME}" driveway gates, openers, or accessories, please call back or reply to this text and I'll help right away. Have a great day!`
+    );
+  }
+  if (options.callDirection === 'inbound') {
+    return `${baseBrand} Thanks for calling! How can I help you today?`;
+  }
+  if (options.callDirection === 'outbound') {
+    return `${baseBrand} I'm reaching out to help, what can I assist you with today?`;
+  }
+  return `${baseBrand} How can I help?`;
+}
+
+function externalChatPrompt(currentIsoTimestamp: string): string {
+  return (
+    `Voice: Be very friendly, kind, and expressive.
+
+    Role: You are a knowledgeable specialist in high-end driveway gates, openers, and accessories.
+
+    Objective: Understand the customer's needs, provide accurate information, and guide them to the perfect "${BRAND_NAME}" product or solution, driving sales and satisfaction.
+
+    Strict Scope: Your knowledge is limited to "${BRAND_NAME}" products (driveway gates, fences, accessories, etc.). If asked about unrelated items or services, politely decline and steer the conversation back to "${BRAND_NAME}" offerings.
+
+    Identity Rule (CRITICAL): At the beginning of EVERY response — including voicemails — you MUST clearly say: "This is the "${BRAND_NAME}" A.I. assistant." Do not skip this line.
+
+    Voicemail Rule (CRITICAL): When leaving a voicemail, keep it short, identify yourself as the "${BRAND_NAME}" A.I. assistant, state that we missed them, invite a call back or text reply, and do not ask questions.
+
+    Knowledge: ${BRAND_NAME} began from this simple promise. Design custom-sized automatic steel and wood gates and fences of the highest industry standard, deliver them directly to our fellow Americans for free, and offer enjoyable easy to follow Do-It-Yourself installation guides.
+
+    Guidelines:
+    - Ask concise clarifying questions to understand the use-case (swing vs. slide, driveway width/slope, material/style preference, opener power and power source, climate, budget, security/accessory needs).
+    - Keep responses warm, upbeat, and professional; prioritize clarity over humor unless the customer invites it.
+    
+    The current date is ${currentIsoTimestamp}.`
+  );
+}
+
+function realtimeConcatPrompt(basePrompt: string): string {
+  return `Speak fast. ${basePrompt}`.trim();
+}
+
+// Direct text generation using OpenAI API (replaces nonstream endpoint)
+async function generateTextDirect(
+  env: Env,
+  messages: UiMessage[],
+  systemPrompt: string
+): Promise<string> {
+  try {
+    // Convert UiMessage format to OpenAI API format
+    const openaiMessages = messages.map((msg) => ({
+      role: msg.role,
+      content: msg.parts.map(part => part.text).join('')
+    }));
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-5',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...openaiMessages
+        ],
+        temperature: 0.8,
+        max_tokens: 1000
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI API error: ${response.status}`);
+    }
+
+    const data = await response.json() as {
+      choices?: Array<{
+        message?: {
+          content?: string;
+        };
+      }>;
+    };
+
+    return data.choices?.[0]?.message?.content || 'Sorry, I could not generate a response.';
+  } catch (error) {
+    owrError('Direct text generation failed:', error);
+    return 'Sorry, I\'m currently under maintenance.';
+  }
+}
+
+// TwiML generation utilities
+function xmlEscapeAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/\"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function buildTwimlConnectStream(relayUrl: string, parameters?: Record<string, string>): string {
+  const safeUrl = xmlEscapeAttr(relayUrl);
+  const paramXml = parameters
+    ? Object.entries(parameters)
+        .map(
+          ([name, value]) =>
+            `\n\t\t\t<Parameter name="${xmlEscapeAttr(name)}" value="${xmlEscapeAttr(value)}" />`
+        )
+        .join('')
+    : '';
+  
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+\t<Connect>
+\t\t<Stream url="${safeUrl}">${paramXml}
+\t\t</Stream>
+\t</Connect>
+</Response>`;
+}
 
 // TODO Secure the convo endpoint:
 // Set the Post-Event URL to include HTTP Basic credentials:
@@ -50,11 +173,92 @@ const LOG_EVENT_TYPES: ReadonlyArray<string> = [
 ];
 const SHOW_TIMING_MATH = false;
 
+// ---- Simple in-memory rate limiter (token bucket) ----
+type RateBucket = {
+  tokens: number;
+  lastRefill: number;
+  capacity: number;
+  refillPerMs: number;
+};
+
+function getClientIp(request: Request): string {
+  const cfIp = request.headers.get("CF-Connecting-IP");
+  if (cfIp) return cfIp;
+  const xff = request.headers.get("X-Forwarded-For");
+  if (xff) return xff.split(",")[0]?.trim() || "unknown";
+  return "unknown";
+}
+
+function getRateLimiter(): Map<string, RateBucket> {
+  // @ts-expect-error attach ephemeral map to global
+  globalThis.__rateLimiter ||= new Map<string, RateBucket>();
+  // @ts-expect-error read back ephemeral map from global
+  return globalThis.__rateLimiter as Map<string, RateBucket>;
+}
+
+function pruneRateLimiter(): void {
+  const buckets = getRateLimiter();
+  const now = Date.now();
+  for (const [key, bucket] of buckets) {
+    if (bucket.tokens >= bucket.capacity && now - bucket.lastRefill > 5 * 60 * 1000) {
+      buckets.delete(key);
+    }
+  }
+}
+
+function rateLimitConsume(
+  key: string,
+  capacity: number,
+  intervalMs: number
+): { allowed: boolean; retryAfterMs: number } {
+  const buckets = getRateLimiter();
+  const now = Date.now();
+  const refillPerMs = capacity / intervalMs;
+  let bucket = buckets.get(key);
+  if (!bucket) {
+    bucket = { tokens: capacity - 1, lastRefill: now, capacity, refillPerMs };
+    buckets.set(key, bucket);
+    if (Math.random() < 0.01) pruneRateLimiter();
+    return { allowed: true, retryAfterMs: 0 };
+  }
+  let tokens = bucket.tokens + (now - bucket.lastRefill) * bucket.refillPerMs;
+  if (tokens > capacity) tokens = capacity;
+  if (tokens < 1) {
+    bucket.tokens = tokens;
+    bucket.lastRefill = now;
+    bucket.capacity = capacity;
+    bucket.refillPerMs = refillPerMs;
+    const retryAfterMs = Math.ceil((1 - tokens) / bucket.refillPerMs);
+    if (Math.random() < 0.01) pruneRateLimiter();
+    return { allowed: false, retryAfterMs };
+  }
+  tokens -= 1;
+  bucket.tokens = tokens;
+  bucket.lastRefill = now;
+  bucket.capacity = capacity;
+  bucket.refillPerMs = refillPerMs;
+  if (Math.random() < 0.01) pruneRateLimiter();
+  return { allowed: true, retryAfterMs: 0 };
+}
+
+// Reasonable defaults (tune as needed)
+const RL_HTTP_CAPACITY = 60; // 60 requests
+const RL_HTTP_INTERVAL_MS = 60_000; // per minute
+const RL_WS_CAPACITY = 10; // 10 upgrades
+const RL_WS_INTERVAL_MS = 60_000; // per minute
+const RL_TWILIO_CONVO_CAPACITY = 12; // 12 convo events
+const RL_TWILIO_CONVO_INTERVAL_MS = 30_000; // per 30s
+const TIME_LIMIT_MS = 10 * 60 * 1000; // 10 minutes hard cap
+const FINAL_TIME_LIMIT_MESSAGE =
+'Call time limit reached, please call again to continue chatting. Good bye.';
+
 // ---- Conversations webhook helpers ----
 const TWILIO_CONV_BASE = "https://conversations.twilio.com/v1";
 const TWILIO_API_BASE = "https://api.twilio.com/2010-04-01";
 const BOT_IDENTITY = "gateframes-bot";
 const PROJECTED_ADDRESS = "+14082605145"; // must be in your Messaging Service sender pool
+const TWILIO_NUMBER = PROJECTED_ADDRESS;
+const CONVO_CONTEXT_LIMIT = 20; // number of recent messages to include for nonstream context
 
 function twilioAuthHeader(env: Env): string {
   const token = btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`);
@@ -208,6 +412,205 @@ async function createConversationWithParticipants(
   }
 }
 
+// ---- Helpers to build nonstream chat context from Twilio history ----
+type UiMessageRole = "system" | "user" | "assistant";
+type UiMessagePartText = { type: "text"; text: string };
+type UiMessage = { id: string; role: UiMessageRole; parts: UiMessagePartText[] };
+
+function cleanseGroupMentions(text: string): string {
+  // Remove @ai mentions and extra whitespace in group threads
+  return text.replace(/(^|\s)@ai(\b|:)?/gi, " ").replace(/\s+/g, " ").trim();
+}
+
+function mapTwilioToUiMessage(
+  msg: { sid?: string; author?: string; body?: string; index?: number },
+  opts: { isGroup: boolean }
+): UiMessage | null {
+  const textRaw = (msg.body || "").trim();
+  if (!textRaw) return null;
+  const author = (msg.author || "").toLowerCase();
+  let role: UiMessageRole = "user";
+  if (author === BOT_IDENTITY) role = "assistant";
+  else if (author === "system") role = "system";
+  const text = opts.isGroup && role === "user" ? cleanseGroupMentions(textRaw) : textRaw;
+  if (!text) return null;
+  return {
+    id: msg.sid || String(msg.index ?? crypto.randomUUID()),
+    role,
+    parts: [{ type: "text", text }],
+  };
+}
+
+async function fetchConversationHistoryAsUiMessages(
+  env: Env,
+  conversationSid: string,
+  opts: { isGroup: boolean; limit: number }
+): Promise<UiMessage[]> {
+  try {
+    const res = await twilioGet(env, `/Conversations/${conversationSid}/Messages?PageSize=${opts.limit}`);
+    const json = (await res.json()) as { messages?: Array<{ author?: string; body?: string; index?: number; sid?: string }> };
+    const raw = (json.messages || []);
+    // Twilio typically returns newest-first; reverse to chronological
+    raw.reverse();
+    const out: UiMessage[] = [];
+    for (const m of raw) {
+      const mapped = mapTwilioToUiMessage(m, { isGroup: opts.isGroup });
+      if (mapped) out.push(mapped);
+    }
+    return out;
+  } catch (e) {
+    owrError("[convo] failed to load history", e);
+    return [];
+  }
+}
+
+function base64UrlToBytes(b64url: string): Uint8Array {
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+  const bin = atob(b64 + pad);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+function base64UrlToString(b64url: string): string | null {
+  try {
+    const bytes = base64UrlToBytes(b64url);
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function encryptAesGcm(data: Uint8Array, keyBytes: Uint8Array): Promise<Uint8Array> {
+  const iv = crypto.getRandomValues(new Uint8Array(16));
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyBytes.buffer as ArrayBuffer,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt"]
+  );
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: iv.buffer as ArrayBuffer },
+    cryptoKey,
+    data.buffer as ArrayBuffer
+  );
+  const result = new Uint8Array(16 + encrypted.byteLength + 16);
+  result.set(iv, 0);
+  result.set(new Uint8Array(encrypted), 16);
+  // Note: AES-GCM automatically appends the auth tag
+  return result;
+}
+
+async function generateRelayAuthToken(env: Env, origin: "twilio" | "client"): Promise<string> {
+  const now = Date.now();
+  const payload = {
+    iat: now,
+    exp: now + 5 * 60 * 1000, // 5 minutes
+    origin,
+    nonce: crypto.randomUUID()
+  };
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(payload));
+  const keyBytes = base64ToBytes(env.ENCRYPTION_KEY);
+  const encrypted = await encryptAesGcm(jsonBytes, keyBytes);
+  
+  // Convert to base64url
+  const b64 = btoa(String.fromCharCode(...encrypted));
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+async function decryptAesGcm(data: Uint8Array, keyBytes: Uint8Array): Promise<Uint8Array> {
+  if (data.length < 33) throw new Error("invalid data");
+  const iv = data.slice(0, 16);
+  const authTag = data.slice(data.length - 16);
+  const ciphertext = data.slice(16, data.length - 16);
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyBytes.buffer as ArrayBuffer,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"]
+  );
+  const combined = new Uint8Array(ciphertext.length + authTag.length);
+  combined.set(ciphertext, 0);
+  combined.set(authTag, ciphertext.length);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: iv.buffer as ArrayBuffer },
+    cryptoKey,
+    combined.buffer as ArrayBuffer
+  );
+  return new Uint8Array(plain);
+}
+
+async function handleTwilioVoiceWebhook(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+  
+  // Generate relay auth token and build URL with self-reference
+  const token = await generateRelayAuthToken(env, 'twilio');
+  let relayUrl = `${url.origin}/token/${token}?mode=twilio&voice=echo`;
+
+  // Parse form data for POST requests or query params for GET
+  let answeredBy: string | null = null;
+  let direction: 'inbound' | 'outbound' | 'unknown' = 'unknown';
+  
+  if (request.method === 'POST') {
+    try {
+      const form = await request.formData();
+      const ab = form.get('AnsweredBy');
+      answeredBy = typeof ab === 'string' ? ab.toLowerCase() : null;
+      const from = typeof form.get('From') === 'string' ? (form.get('From') as string) : '';
+      const to = typeof form.get('To') === 'string' ? (form.get('To') as string) : '';
+      if (from === TWILIO_NUMBER) direction = 'outbound';
+      else if (to === TWILIO_NUMBER) direction = 'inbound';
+    } catch {
+      answeredBy = null;
+    }
+  } else {
+    // GET request - check query params
+    const answeredByParam = url.searchParams.get('AnsweredBy');
+    answeredBy = answeredByParam ? answeredByParam.toLowerCase() : null;
+    const dirParam = url.searchParams.get('direction');
+    direction = dirParam === 'outbound' ? 'outbound' : dirParam === 'inbound' ? 'inbound' : 'unknown';
+  }
+
+  // Prepare TwiML parameters
+  const amdValue = answeredBy ?? 'unknown';
+  const voicemailMode = amdValue.includes('machine');
+  
+  // Encode system prompt and greeting as base64url
+  const sysB64 = btoa(realtimeConcatPrompt(externalChatPrompt(new Date().toISOString())))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+  
+  const greetB64 = btoa(buildInitialCallGreeting({ voicemailMode, callDirection: direction }))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+
+  const twiml = buildTwimlConnectStream(relayUrl, {
+    amd: amdValue,
+    direction,
+    sys: sysB64,
+    greet: greetB64
+  });
+
+  return new Response(twiml, { 
+    headers: { 'Content-Type': 'text/xml' } 
+  });
+}
+
 async function handleTwilioConversationsWebhook(
   request: Request,
   env: Env,
@@ -224,6 +627,14 @@ async function handleTwilioConversationsWebhook(
   owrLog("[/twilio/convo]", { eventType, conversationSid, author, hasBody: Boolean(body) });
 
   const resp = new Response("ok", { status: 200 });
+
+  // Per-conversation rate limit to avoid runaway loops
+  const convoKey = conversationSid || (author ? `author:${author}` : "unknown");
+  const rl = rateLimitConsume(`twilio-convo:${convoKey}`, RL_TWILIO_CONVO_CAPACITY, RL_TWILIO_CONVO_INTERVAL_MS);
+  if (!rl.allowed) {
+    owrLog("[/twilio/convo] rate limited", { key: convoKey, retryAfterMs: rl.retryAfterMs });
+    return resp;
+  }
 
   const now = Date.now();
   // @ts-expect-error
@@ -306,22 +717,48 @@ async function handleTwilioConversationsWebhook(
         await ensureBotParticipant(env, conversationSid);
 
         // AI reply
-        const baseUrl = "https://www.gateframes.com";
         let reply = `Sorry, I'm currently under maintenance..`;
         try {
-          const aiRes = await fetch(`${baseUrl}/api/chat/nonstream`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              messages: [
-                { id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: body }] },
-              ],
-            }),
-          });
-          if (aiRes.ok) {
-            const aiJson = (await aiRes.json()) as { text?: string };
-            reply = aiJson?.text ?? reply;
+          // Build conversation context from recent Twilio messages
+          const history: UiMessage[] = await fetchConversationHistoryAsUiMessages(env, conversationSid, { isGroup, limit: CONVO_CONTEXT_LIMIT });
+          const incomingUserTextRaw = (body || "").trim();
+          const incomingUserText = (isGroup ? cleanseGroupMentions(incomingUserTextRaw) : incomingUserTextRaw).trim();
+
+          let messages: UiMessage[] = [];
+          if (history.length > 0) {
+            // Convert history into a single system message (excluding the latest incoming user turn)
+            const historyLines: string[] = [];
+            for (let i = 0; i < history.length; i++) {
+              const m = history[i];
+              const text = (m.parts?.[0]?.text || "").trim();
+              if (!text) continue;
+              const isLast = i === history.length - 1;
+              if (isLast && m.role === "user" && text === incomingUserText) {
+                // Skip the most recent user turn; will be sent as the final user message
+                continue;
+              }
+              const label = m.role === "assistant" ? "Assistant" : m.role === "system" ? "System" : "User";
+              historyLines.push(`${label}: ${text}`);
+            }
+            if (historyLines.length > 0) {
+              messages.push({
+                id: crypto.randomUUID(),
+                role: "system",
+                parts: [{ type: "text", text: `Conversation history (most recent last):\n${historyLines.join("\n")}` }],
+              });
+            }
           }
+          // Append the latest incoming user message
+          if (incomingUserText) {
+            messages.push({ id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: incomingUserText }] });
+          }
+          if (messages.length === 0) {
+            messages = [{ id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: incomingUserText || "" }] }];
+          }
+
+          // Generate response directly using OpenAI API (no more HTTP round-trip)
+          const timeStamp = new Date().toISOString();
+          reply = await generateTextDirect(env, messages, externalChatPrompt(timeStamp));
         } catch {}
 
         await twilioPost(env, `/Conversations/${conversationSid}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: reply }));
@@ -334,48 +771,6 @@ async function handleTwilioConversationsWebhook(
   );
 
   return resp;
-}
-
-function getInitialMessageForMode(options: { voicemailMode: boolean; callDirection: 'inbound' | 'outbound' | 'unknown' }): string {
-  const baseBrand = `Hello, this is the "Gate Frames" A.I. assistant.`;
-  if (options.voicemailMode) {
-    return (
-      `${baseBrand} Sorry we missed you. I'm leaving a short voicemail now. ` +
-      `If you have questions about "Gate Frames" driveway gates, openers, or accessories, please call back or reply to this text and I’ll help right away. Have a great day!`
-    );
-  }
-  if (options.callDirection === 'inbound') {
-    return `${baseBrand} Thanks for calling! How can I help you today?`;
-  }
-  if (options.callDirection === 'outbound') {
-    return `${baseBrand} I’m reaching out to help, what can I assist you with today?`;
-  }
-  return `${baseBrand} How can I help?`;
-}
-
-// NOTE This prompt is a duplicate of the one in our Twilio Text endpoint.
-function getSystemMessage(timeStamp: string): string {
-  return (
-    `Voice: Be very friendly, kind, and expressive.
-
-    Role: You are a knowledgeable specialist in high-end driveway gates, openers, and accessories.
-
-    Objective: Understand the customer's needs, provide accurate information, and guide them to the perfect Gate Frames product or solution, driving sales and satisfaction.
-
-    Strict Scope: Your knowledge is limited to "Gate Frames" products (driveway gates, fences, accessories, etc.). If asked about unrelated items or services, politely decline and steer the conversation back to "Gate Frames" offerings.
-
-    Identity Rule (CRITICAL): At the beginning of EVERY response — including voicemails — you MUST clearly say: "This is the "Gate Frames" A.I. assistant." Do not skip this line.
-
-    Voicemail Rule (CRITICAL): When leaving a voicemail, keep it short, identify yourself as the "Gate Frames" A.I. assistant, state that we missed them, invite a call back or text reply, and do not ask questions.
-
-    Knowledge: Gate Frames began from this simple promise. Design custom-sized automatic steel and wood gates and fences of the highest industry standard, deliver them directly to our fellow Americans for free, and offer enjoyable easy to follow Do-It-Yourself installation guides.
-
-    Guidelines:
-    - Ask concise clarifying questions to understand the use-case (swing vs. slide, driveway width/slope, material/style preference, opener power and power source, climate, budget, security/accessory needs).
-    - Keep responses warm, upbeat, and professional; prioritize clarity over humor unless the customer invites it.
-    
-    The current date is ${timeStamp}.`
-  );
 }
 
 // Twilio Media Stream event types
@@ -465,6 +860,25 @@ async function createRealtimeClient(
     });
   }
 
+  // Enforce a hard time limit for client-side realtime sessions
+  const endClientDueToTimeLimit = () => {
+    try {
+      serverSocket.send(
+        JSON.stringify({
+          type: "system.time_limit",
+          message: FINAL_TIME_LIMIT_MESSAGE,
+        })
+      );
+    } catch {}
+    try {
+      serverSocket.close(4000, "time_limit");
+    } catch {}
+    try {
+      realtimeClient?.disconnect();
+    } catch {}
+  };
+  const clientTimeLimitTimer = setTimeout(endClientDueToTimeLimit, TIME_LIMIT_MS);
+
   // Relay: OpenAI Realtime API Event -> Client
   realtimeClient.realtime.on("server.*", (event: { type: string }) => {
     serverSocket.send(JSON.stringify(event));
@@ -504,6 +918,7 @@ async function createRealtimeClient(
     );
     realtimeClient.disconnect();
     messageQueue.length = 0;
+    try { clearTimeout(clientTimeLimitTimer); } catch {}
   });
 
   let model: string | undefined = MODEL;
@@ -572,10 +987,12 @@ async function createTwilioRealtimeBridge(
     return new Response(null, { status: 101, headers: responseHeaders, webSocket: clientSocket });
   }
   const voiceParam = (reqUrl.searchParams.get("voice") || "").toLowerCase();
-  const amdParam = (reqUrl.searchParams.get("amd") || "").toLowerCase();
-  let voicemailMode = amdParam.includes("machine");
+  // sys/greet/amd now arrive via Twilio start.customParameters; set defaults here
+  let systemInstructionsOverride: string | null = null;
+  let initialGreetingOverride: string | null = null;
+  let voicemailMode = false;
   let callDirection: 'inbound' | 'outbound' | 'unknown' = 'unknown';
-  owrLog("[twilio] initial amd query param:", amdParam, "voicemailMode:", voicemailMode);
+  owrLog("[twilio] voicemailMode (pre-start):", voicemailMode, "direction:", callDirection);
   const selectedVoice: VoiceName = (ALLOWED_VOICES.includes(
     voiceParam as VoiceName
   )
@@ -598,6 +1015,45 @@ async function createTwilioRealtimeBridge(
   let lastAssistantItem: NullableString = null;
   let markQueue: string[] = [];
   let responseStartTimestampTwilio: number | null = null;
+
+  // Time-limit enforcement for Twilio bridge
+  let timeLimitTimer: ReturnType<typeof setTimeout> | null = null;
+  let timeLimitClosing = false;
+  let timeLimitCloseFallback: ReturnType<typeof setTimeout> | null = null;
+
+  function sendFinalAndClose() {
+    if (timeLimitClosing) return;
+    timeLimitClosing = true;
+    try {
+      const item = {
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: `Please say exactly: ${FINAL_TIME_LIMIT_MESSAGE}` }]
+        }
+      } as const;
+      realtimeClient!.realtime.send('conversation.item.create', item);
+      realtimeClient!.realtime.send('response.create', { type: 'response.create' });
+    } catch {}
+    // Fallback: force-close after 20s if no response.done arrives
+    try {
+      if (timeLimitCloseFallback) clearTimeout(timeLimitCloseFallback);
+      timeLimitCloseFallback = setTimeout(() => {
+        try { serverSocket.close(1000, 'time_limit'); } catch {}
+        try { realtimeClient?.disconnect(); } catch {}
+      }, 20_000);
+    } catch {}
+  }
+
+  function scheduleTimeLimit() {
+    try {
+      if (timeLimitTimer) clearTimeout(timeLimitTimer);
+      timeLimitTimer = setTimeout(() => {
+        sendFinalAndClose();
+      }, TIME_LIMIT_MS);
+    } catch {}
+  }
 
   // Build OpenAI Realtime client
   let realtimeClient: RealtimeClient | null = null;
@@ -624,7 +1080,7 @@ async function createTwilioRealtimeBridge(
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
         voice: selectedVoice,
-        instructions: getSystemMessage(new Date().toISOString()),
+        instructions: systemInstructionsOverride ?? '',
         modalities: ["text", "audio"],
         temperature: 0.8,
       },
@@ -637,7 +1093,8 @@ async function createTwilioRealtimeBridge(
     if (initialUserMessageSent) return;
     initialUserMessageSent = true;
     owrLog("[twilio] sending initial message. voicemailMode:", voicemailMode, 'direction:', callDirection);
-    const initialMessage = getInitialMessageForMode({ voicemailMode, callDirection });
+    const initialMessage = initialGreetingOverride ?? '';
+    if (!initialMessage) return;
     const initialConversationItem = {
       type: "conversation.item.create",
       item: {
@@ -742,6 +1199,12 @@ async function createTwilioRealtimeBridge(
           realtimeClient?.disconnect();
         } catch {}
       }
+
+      // If we triggered a time-limit closing, end call after the assistant finishes speaking
+      if (timeLimitClosing && evt.type === 'response.done') {
+        try { serverSocket.close(1000, 'time_limit'); } catch {}
+        try { realtimeClient?.disconnect(); } catch {}
+      }
     } catch (error) {
       owrError("Error processing OpenAI message (Twilio mode)", error);
     }
@@ -837,11 +1300,28 @@ async function createTwilioRealtimeBridge(
             owrLog("[twilio] start.customParameters:", customParams);
             for (const p of customParams) {
               const key = (p.name || p.key || "").toLowerCase();
-              const value = (p.value || "").toLowerCase();
+              const rawValue = p.value || "";
+              const lowerValue = rawValue.toLowerCase();
               if (key === "amd") {
-                voicemailMode = value.includes("machine");
+                voicemailMode = lowerValue.includes("machine");
               } else if (key === 'direction') {
-                if (value === 'inbound' || value === 'outbound') callDirection = value;
+                if (lowerValue === 'inbound' || lowerValue === 'outbound') callDirection = lowerValue as 'inbound' | 'outbound';
+              } else if (key === 'sys') {
+                const decoded = base64UrlToString(rawValue);
+                if (decoded != null) {
+                  systemInstructionsOverride = decoded;
+                  try {
+                    // Update session instructions if already connected
+                    if (realtimeClient?.isConnected()) {
+                      realtimeClient.realtime.send('session.update', { type: 'session.update', session: { instructions: systemInstructionsOverride } });
+                    }
+                  } catch {}
+                }
+              } else if (key === 'greet') {
+                const decoded = base64UrlToString(rawValue);
+                if (decoded != null) {
+                  initialGreetingOverride = decoded;
+                }
               }
             }
             owrLog("[twilio] computed voicemailMode after start:", voicemailMode, "direction:", callDirection);
@@ -855,6 +1335,7 @@ async function createTwilioRealtimeBridge(
           responseStartTimestampTwilio = null;
           latestMediaTimestamp = 0;
           owrLog("Incoming Twilio stream has started", streamSid);
+          scheduleTimeLimit();
           break;
         }
         case "mark": {
@@ -878,6 +1359,8 @@ async function createTwilioRealtimeBridge(
       if (realtimeClient?.isConnected()) realtimeClient.disconnect();
     } catch {}
     owrLog("Twilio client disconnected.");
+    try { if (timeLimitTimer) clearTimeout(timeLimitTimer); } catch {}
+    try { if (timeLimitCloseFallback) clearTimeout(timeLimitCloseFallback); } catch {}
   });
 
   let shouldSendInitialOnConnect = false;
@@ -1040,45 +1523,6 @@ async function validateAuth(
   }
 }
 
-function base64UrlToBytes(b64url: string): Uint8Array {
-  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
-  const bin = atob(b64 + pad);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-async function decryptAesGcm(data: Uint8Array, keyBytes: Uint8Array): Promise<Uint8Array> {
-  if (data.length < 33) throw new Error("invalid data");
-  const iv = data.slice(0, 16);
-  const authTag = data.slice(data.length - 16);
-  const ciphertext = data.slice(16, data.length - 16);
-  const cryptoKey = await crypto.subtle.importKey(
-    "raw",
-    keyBytes.buffer as ArrayBuffer,
-    { name: "AES-GCM" },
-    false,
-    ["decrypt"]
-  );
-  const combined = new Uint8Array(ciphertext.length + authTag.length);
-  combined.set(ciphertext, 0);
-  combined.set(authTag, ciphertext.length);
-  const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: iv.buffer as ArrayBuffer },
-    cryptoKey,
-    combined.buffer as ArrayBuffer
-  );
-  return new Uint8Array(plain);
-}
-
 export default {
   async fetch(
     request: Request,
@@ -1087,6 +1531,7 @@ export default {
   ): Promise<Response> {
     const url = new URL(request.url);
     const mode = url.searchParams.get("mode");
+    const clientIp = getClientIp(request);
 
     const upgradeHeader = request.headers.get("Upgrade");
     if (upgradeHeader === "websocket") {
@@ -1107,6 +1552,13 @@ export default {
         return new Response("Unauthorized origin", { status: 403 });
       }
 
+      // Per-IP websocket upgrade rate limit (non-Twilio only)
+      const rl = rateLimitConsume(`ws:${clientIp}`, RL_WS_CAPACITY, RL_WS_INTERVAL_MS);
+      if (!rl.allowed) {
+        const retrySec = Math.max(1, Math.ceil(rl.retryAfterMs / 1000));
+        return new Response("Too Many Requests", { status: 429, headers: { "Retry-After": String(retrySec) } });
+      }
+
       return createRealtimeClient(request, env, ctx);
     }
 
@@ -1114,6 +1566,16 @@ export default {
     const pathname = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
     if (pathname === "/twilio/convo" && request.method === "POST") {
       return handleTwilioConversationsWebhook(request, env, ctx);
+    }
+    if (pathname === "/twilio/voice" && (request.method === "POST" || request.method === "GET")) {
+      return handleTwilioVoiceWebhook(request, env);
+    }
+
+    // Per-IP HTTP rate limit for all other endpoints
+    const httpRl = rateLimitConsume(`http:${clientIp}`, RL_HTTP_CAPACITY, RL_HTTP_INTERVAL_MS);
+    if (!httpRl.allowed) {
+      const retrySec = Math.max(1, Math.ceil(httpRl.retryAfterMs / 1000));
+      return new Response("Too Many Requests", { status: 429, headers: { "Retry-After": String(retrySec) } });
     }
 
     // If Twilio posts to an unexpected path, log for diagnostics

@@ -1,51 +1,55 @@
-This is a relay server for usage with [OpenAI's realtime API](https://platform.openai.com/docs/guides/realtime/quickstart). You can use this repo as a starting point for incorporating the realtime api into your own project. When deployed to a Cloudflare Worker, you can connect to it from a frontend (like a web app) without needing your users to have or share their own OpenAI api key.
+# Racky Relay Server
 
-_NB: This project is considered beta, because the underlying OpenAI Realtime API is currently in beta. We will work on keeping this in sync with the work at OpenAI, but there may be some lag. File an issue if you have any problems!_
+Cloudflare Worker that:
+- Bridges client WebSocket to OpenAI Realtime API.
+- Bridges Twilio Media Streams to OpenAI Realtime (voice assistant, voicemail mode, barge-in).
+- Handles Twilio Conversations webhooks for SMS group chats and command helpers.
+- Enforces short‑lived auth tokens and origin checks.
+- Applies simple in‑memory rate limits.
 
-## Usage
+### Features
+- Client WS relay: validates short‑lived AES‑GCM token (origin "client") via `/token/<b64url>`, `/auth/<b64url>`, or `?auth=` before opening relay.
+- Twilio WS bridge: detects Twilio via `mode=twilio` or headers; bypasses Origin checks; configures session with `g711_ulaw`, server VAD, voice (default `ash`), text+audio.
+  - Uses custom params: `amd` (voicemail detection) and `direction` (`inbound`/`outbound`) to tailor the initial prompt.
+  - Voicemail mode: send short voicemail then end the stream.
+  - Barge‑in: truncates assistant audio when caller speaks.
+- Twilio Conversations webhook (`/twilio/convo`):
+  - Ensures bot participant `gateframes-bot` with projected address `+14082605145`.
+  - `@call 4155550000, ...`: places outbound calls via Twilio Voice to `https://www.gateframes.com/api/twilio/voice`.
+  - `@group 4155550000, ...`: creates a new group with author + numbers and seeds an intro.
+  - Group gating: in multi‑party chats, the bot replies only if `@ai` is present.
+  - AI reply generated directly via OpenAI API (no HTTP round-trip).
+  - Dedupe by `MessageSid` or `ConversationSid:MessageIndex` for ~10 minutes.
+- Origin allowlist for non‑Twilio WS: `https://www.gateframes.com`, `https://gateframes.com`, `https://www.ricslist.com`, `https://ricslist.com`, and any `http://localhost:<port>`.
 
-The included [server](./src/index.ts) should work out of the box with the official example [openai-realtime-console](https://github.com/openai/openai-realtime-console/) application. You can copy paste code out of it into your Worker, or just deploy this one directly. Feel free to modify the code and configuration to fit your needs.
+### Rate limits (in‑memory, per‑instance)
+- Realtime connections end politely after 10 minutes.
+- HTTP (per IP): **60 requests / minute** → `429` with `Retry-After`.
+- WebSocket upgrades, non‑Twilio (per IP): **10 / minute** → `429` with `Retry-After`.
+- Twilio Conversations (per conversation): **12 events / 30s** → silently ignored (returns `200 ok`).
+Notes: simple token bucket stored in `globalThis`; ephemeral across deploys/instances; periodic pruning to avoid growth.
 
-### Add an OPENAI_API_KEY to your secrets
+### Endpoints & behavior
+- WebSocket (client relay): upgrade to WS on any path; requires valid token and allowed Origin.
+- WebSocket (Twilio bridge): `?mode=twilio` (or Twilio headers) connects to the bridge; Origin not required.
+- HTTP:
+  - `POST /twilio/convo` — Twilio Conversations webhook.
+  - `/token/<b64url>` or `/auth/<b64url>` — HTTP `200 OK` (useful for health pings); tokens are enforced only on WS upgrades.
+  - Others: `426 Expected Upgrade` if not a WS.
 
-To actually connect to OpenAI, you'll need to add your OpenAI API key to the secrets for your worker. First, generate an API key from your OpenAI console at https://platform.openai.com/api-keys.
-
-In local development, create a file called `.dev.vars` in the root of the project with the following:
-
-```
-OPENAI_API_KEY=<your key here>
-```
-
-This should let you develop and test your code locally. The API key will be available in your request's `env` object as `env.OPENAI_API_KEY`.
-
-In production, you'll need to add an `OPENAI_API_KEY` to your Worker's secrets. After that, you can add it to your secrets by running the following command:
-
+### Configuration
+Env vars (set as Wrangler secrets where applicable):
 ```sh
 npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put ENCRYPTION_KEY
+npx wrangler secret put TWILIO_ACCOUNT_SID
+npx wrangler secret put TWILIO_AUTH_TOKEN
 ```
-
-Then, after you deploy your project, the API key will be available in your request's `env` object as `env.OPENAI_API_KEY`.
-
-### Add authorization, rate limiting, or anything else!
-
-We recommend that you add a layer of authorization on top of this relay server. This will prevent any random person from using relay, and your OpenAI key! If you're deploying this relay server as part of another Workers project, then it should be fairly straightforward to leverage the authorization and rate limiting already in place there.
-
-If you're deploying this server to a completely different domain, then you'll have to add a layer of auth on top of the WebSocket connection. Since the standard WebSocket api doesn't support adding cookies or any other headers, you'll have to layer it on top of the URL/protocols when making the connection. For example, you could generate an encrypted short lived token in your existing webapp, add it to the WebSocket url's query params, and then decode it in the Worker to verify the provenance of the request.
+Other constants (edit in `src/index.ts` if needed): model (`gpt-4o-realtime-preview`), allowed voices, bot identity, projected address, allowed origins.
 
 ### Develop locally
-
-To develop locally, you can run `npm start` and then connect to the local server at `ws://localhost:8787`.
+Run the worker and connect your client:
+- `npm start` → connect to `ws://localhost:8787` (client WS) or `ws://localhost:8787/?mode=twilio` (Twilio bridge).
 
 ### Deploy to production
-
-To deploy to production, you can run `npm run deploy` and then connect to the production server at `wss://<your-worker-name>.<username>.workers.dev` (or any custom routes/domains [that you setup in `wrangler.toml`](https://developers.cloudflare.com/workers/configuration/routing/routes/#set-up-a-route-in-wranglertoml))
-
-## Show us what you made!
-
-We'd love to see what you create with this. Tweet us [@cloudflaredev](https://twitter.com/cloudflaredev) and let us know what you're building!
-
-## Thanks
-
-![braintrust](https://github.com/user-attachments/assets/5eb1bb08-bdd0-462d-816c-83c03d618add)
-
-We built this in collaboration with the folks at [Braintrust](https://www.braintrust.dev/).
+`npm run deploy`, then connect to `wss://<worker>.<account>.workers.dev` (or your routed domain as configured in `wrangler.toml`).

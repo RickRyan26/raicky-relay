@@ -41,7 +41,7 @@ export const RL_TWILIO_CONVO_CAPACITY = 12; // 12 convo events
 export const RL_TWILIO_CONVO_INTERVAL_MS = 30_000; // per 30s
 
 // Time limits
-export const TIME_LIMIT_MS = 15 * 1000// 10 * 60 * 1000; // 10 minutes hard cap
+export const TIME_LIMIT_MS = 10 * 60 * 1000; // 10 minutes hard cap
 export const FINAL_TIME_LIMIT_MESSAGE =
   "Call time limit reached, please call again to continue chatting. Good bye.";
 

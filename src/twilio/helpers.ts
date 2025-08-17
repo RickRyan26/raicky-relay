@@ -1,5 +1,11 @@
 import type { Env } from "../config/env";
-import { BOT_IDENTITY, CONVO_CONTEXT_LIMIT, PROJECTED_ADDRESS, TWILIO_API_BASE, TWILIO_CONV_BASE } from "../config/config";
+import {
+  BOT_IDENTITY,
+  CONVO_CONTEXT_LIMIT,
+  PROJECTED_ADDRESS,
+  TWILIO_API_BASE,
+  TWILIO_CONV_BASE,
+} from "../config/config";
 import { rackyError, rackyLog } from "../utils/log";
 
 export function twilioAuthHeader(env: Env): string {
@@ -17,7 +23,11 @@ export async function twilioGet(env: Env, path: string): Promise<Response> {
   });
 }
 
-export async function twilioPost(env: Env, path: string, body: URLSearchParams): Promise<Response> {
+export async function twilioPost(
+  env: Env,
+  path: string,
+  body: URLSearchParams
+): Promise<Response> {
   return fetch(`${TWILIO_CONV_BASE}${path}`, {
     method: "POST",
     headers: {
@@ -29,10 +39,18 @@ export async function twilioPost(env: Env, path: string, body: URLSearchParams):
   });
 }
 
-export async function ensureBotParticipant(env: Env, conversationSid: string): Promise<void> {
+export async function ensureBotParticipant(
+  env: Env,
+  conversationSid: string
+): Promise<void> {
   try {
-    const res = await twilioGet(env, `/Conversations/${conversationSid}/Participants`);
-    const data = (await res.json()) as { participants?: Array<{ identity?: string }> };
+    const res = await twilioGet(
+      env,
+      `/Conversations/${conversationSid}/Participants`
+    );
+    const data = (await res.json()) as {
+      participants?: Array<{ identity?: string }>;
+    };
     const exists = (data.participants || []).some(
       (p) => (p.identity || "").toLowerCase() === BOT_IDENTITY
     );
@@ -41,18 +59,22 @@ export async function ensureBotParticipant(env: Env, conversationSid: string): P
         Identity: BOT_IDENTITY,
         "MessagingBinding.ProjectedAddress": PROJECTED_ADDRESS,
       });
-      const addRes = await twilioPost(env, `/Conversations/${conversationSid}/Participants`, body);
+      const addRes = await twilioPost(
+        env,
+        `/Conversations/${conversationSid}/Participants`,
+        body
+      );
       if (!addRes.ok) {
         const txt = await addRes.text();
-        if (addRes.status === 409 && txt.includes('50438')) {
-          rackyLog('[bot] group already exists; continuing');
+        if (addRes.status === 409 && txt.includes("50438")) {
+          rackyLog("[bot] group already exists; continuing");
           return;
         }
-        rackyError('[bot] failed to add projected participant', txt);
+        rackyError("[bot] failed to add projected participant", txt);
       }
     }
   } catch (e) {
-    rackyError('[bot] ensure participant error', e);
+    rackyError("[bot] ensure participant error", e);
   }
 }
 
@@ -95,46 +117,62 @@ export function parseGroupNumbers(text: string): string[] {
   return numbers;
 }
 
-export async function placeOutboundCalls(env: Env, e164Targets: string[], voiceUrl: string, fastMode: boolean = false): Promise<string[]> {
+export async function placeOutboundCalls(
+  env: Env,
+  e164Targets: string[],
+  voiceUrl: string,
+  voicemailMode: boolean = false
+): Promise<string[]> {
+  // NOTE VOICEMAILS WORK WITHOUT THIS BECAUSE AI IS SMART ENOUGH TO HANDLE VOICEMAILS
+  // Twilio AMD voicemailMode causes 5-8sec delay after call is answered which is unacceptable...
+
   const callSids: string[] = [];
-  rackyLog(`[outbound] Creating ${e164Targets.length} calls with ${fastMode ? 'FAST' : 'OPTIMIZED'} mode`);
-  
+  rackyLog(
+    `[outbound] Creating ${e164Targets.length} calls with ${
+      !voicemailMode ? "FAST" : "VOICEMAIL"
+    } mode`
+  );
+
   for (const e164 of e164Targets) {
     try {
       const params: Record<string, string> = {
         To: e164,
         From: PROJECTED_ADDRESS,
         Url: voiceUrl,
-        Method: 'GET',
+        Method: "GET",
       };
 
-      // Add AMD settings based on mode
-      if (!fastMode) {
-        // Optimized mode: Fast 3-second AMD (down from 30s+ default)
-        params.MachineDetection = 'Enable';
-        params.MachineDetectionTimeout = '3';
-        params.MachineDetectionSpeechThreshold = '2000';
-        params.MachineDetectionSpeechEndThreshold = '1000';
+      if (voicemailMode) {
+        params.MachineDetection = "Enable";
       }
-      // Ultra-fast mode: No AMD params added (immediate connection, AI handles voicemails)
 
       const body = new URLSearchParams(params);
-      
-      rackyLog(`[outbound] Calling ${e164} with AMD: ${fastMode ? 'DISABLED' : 'ENABLED (3s timeout)'}`);
-      
-      const res = await fetch(`${TWILIO_API_BASE}/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, {
-        method: 'POST',
-        headers: { Authorization: twilioAuthHeader(env), 'Content-Type': 'application/x-www-form-urlencoded' },
-        body
-      });
+
+      rackyLog(
+        `[outbound] Calling ${e164} with AMD: ${
+          !voicemailMode ? "DISABLED" : "ENABLED"
+        }`
+      );
+
+      const res = await fetch(
+        `${TWILIO_API_BASE}/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: twilioAuthHeader(env),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body,
+        }
+      );
       if (res.ok) {
         const json = (await res.json()) as { sid?: string };
         if (json.sid) callSids.push(json.sid);
       } else {
-        rackyError('Failed to create call', await res.text());
+        rackyError("Failed to create call", await res.text());
       }
     } catch (e) {
-      rackyError('Failed to start outbound call to', e164, e);
+      rackyError("Failed to start outbound call to", e164, e);
     }
   }
   return callSids;
@@ -147,19 +185,35 @@ export async function createConversationWithParticipants(
 ): Promise<string | null> {
   try {
     const convRes = await fetch(`${TWILIO_CONV_BASE}/Conversations`, {
-      method: 'POST',
-      headers: { Authorization: twilioAuthHeader(env), 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(friendlyName ? { FriendlyName: friendlyName } : {})
+      method: "POST",
+      headers: {
+        Authorization: twilioAuthHeader(env),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(
+        friendlyName ? { FriendlyName: friendlyName } : {}
+      ),
     });
     if (!convRes.ok) return null;
     const conv = (await convRes.json()) as { sid?: string };
     const ch = conv.sid || null;
     if (!ch) return null;
     for (const e164 of addressesE164) {
-      await twilioPost(env, `/Conversations/${ch}/Participants`, new URLSearchParams({ 'MessagingBinding.Address': e164 })).catch(() => {});
+      await twilioPost(
+        env,
+        `/Conversations/${ch}/Participants`,
+        new URLSearchParams({ "MessagingBinding.Address": e164 })
+      ).catch(() => {});
     }
     await ensureBotParticipant(env, ch);
-    await twilioPost(env, `/Conversations/${ch}/Messages`, new URLSearchParams({ Author: BOT_IDENTITY, Body: `Hi! I’m the "Gate Frames" AI assistant—happy to help here. Mention @ai when you want me to jump in.` }));
+    await twilioPost(
+      env,
+      `/Conversations/${ch}/Messages`,
+      new URLSearchParams({
+        Author: BOT_IDENTITY,
+        Body: `Hi! I’m the "Gate Frames" AI assistant—happy to help here. Mention @ai when you want me to jump in.`,
+      })
+    );
     return ch;
   } catch {
     return null;
@@ -168,19 +222,26 @@ export async function createConversationWithParticipants(
 
 export type UiMessageRole = "system" | "user" | "assistant";
 export type UiMessagePartText = { type: "text"; text: string };
-export type UiMessage = { id: string; role: UiMessageRole; parts: UiMessagePartText[] };
+export type UiMessage = {
+  id: string;
+  role: UiMessageRole;
+  parts: UiMessagePartText[];
+};
 
 export function cleanseGroupMentions(text: string): string {
-  return text.replace(/(^|\s)@ai(\b|:)?/gi, " ").replace(/\s+/g, " ").trim();
+  return text
+    .replace(/(^|\s)@ai(\b|:)?/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**
  * Returns a short, non-sensitive label for a group participant (e.g., …7449)
  */
 export function authorShortLabel(author: string): string {
-  const digits = (author || '').replace(/\D/g, '');
+  const digits = (author || "").replace(/\D/g, "");
   if (digits.length >= 4) return `…${digits.slice(-4)}`;
-  return author || 'user';
+  return author || "user";
 }
 
 export function mapTwilioToUiMessage(
@@ -193,8 +254,12 @@ export function mapTwilioToUiMessage(
   let role: UiMessageRole = "user";
   if (author === BOT_IDENTITY) role = "assistant";
   else if (author === "system") role = "system";
-  const base = opts.isGroup && role === "user" ? cleanseGroupMentions(textRaw) : textRaw;
-  const text = opts.isGroup && role === 'user' ? `[${authorShortLabel(author)}] ${base}` : base;
+  const base =
+    opts.isGroup && role === "user" ? cleanseGroupMentions(textRaw) : textRaw;
+  const text =
+    opts.isGroup && role === "user"
+      ? `[${authorShortLabel(author)}] ${base}`
+      : base;
   if (!text) return null;
   return {
     id: msg.sid || String(msg.index ?? crypto.randomUUID()),
@@ -209,9 +274,19 @@ export async function fetchConversationHistoryAsUiMessages(
   opts: { isGroup: boolean; limit: number }
 ): Promise<UiMessage[]> {
   try {
-    const res = await twilioGet(env, `/Conversations/${conversationSid}/Messages?Order=desc&PageSize=${opts.limit}`);
-    const json = (await res.json()) as { messages?: Array<{ author?: string; body?: string; index?: number; sid?: string }> };
-    const raw = (json.messages || []);
+    const res = await twilioGet(
+      env,
+      `/Conversations/${conversationSid}/Messages?Order=desc&PageSize=${opts.limit}`
+    );
+    const json = (await res.json()) as {
+      messages?: Array<{
+        author?: string;
+        body?: string;
+        index?: number;
+        sid?: string;
+      }>;
+    };
+    const raw = json.messages || [];
     raw.reverse();
     const out: UiMessage[] = [];
     for (const m of raw) {
@@ -224,5 +299,3 @@ export async function fetchConversationHistoryAsUiMessages(
     return [];
   }
 }
-
-

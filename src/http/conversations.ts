@@ -17,7 +17,10 @@ import {
 } from "../twilio/helpers";
 import { rackyLog } from "../utils/log";
 import { rateLimitConsume } from "../utils/rateLimiter";
-import { RL_TWILIO_CONVO_CAPACITY, RL_TWILIO_CONVO_INTERVAL_MS } from "../config/config";
+import {
+  RL_TWILIO_CONVO_CAPACITY,
+  RL_TWILIO_CONVO_INTERVAL_MS,
+} from "../config/config";
 
 export async function handleTwilioConversationsWebhook(
   request: Request,
@@ -70,9 +73,17 @@ export async function handleTwilioConversationsWebhook(
 
         // Per-conversation rate limiting to protect against bursts/loops
         const bucketKey = `twilio-convo:${conversationSid}`;
-        const rl = await rateLimitConsume(env, bucketKey, RL_TWILIO_CONVO_CAPACITY, RL_TWILIO_CONVO_INTERVAL_MS);
+        const rl = await rateLimitConsume(
+          env,
+          bucketKey,
+          RL_TWILIO_CONVO_CAPACITY,
+          RL_TWILIO_CONVO_INTERVAL_MS
+        );
         if (!rl.allowed) {
-          rackyLog("[/twilio/convo][429] rate limited", { conversationSid, retryMs: rl.retryAfterMs });
+          rackyLog("[/twilio/convo][429] rate limited", {
+            conversationSid,
+            retryMs: rl.retryAfterMs,
+          });
           return;
         }
 
@@ -112,11 +123,17 @@ export async function handleTwilioConversationsWebhook(
           const e164Targets = callTargets.map((ten) => `+1${ten}`);
           const origin = new URL(request.url).origin;
           const voiceUrl = `${origin}/twilio/voice`;
-          
-          // Use fast mode for immediate AI response (no AMD delay)
-          const fastMode = true;
-          const started = await placeOutboundCalls(env, e164Targets, voiceUrl, fastMode);
-          
+
+          const voicemailMode = false;
+          // NOTE VOICEMAILS WORK WITHOUT THIS BECAUSE AI IS SMART ENOUGH TO HANDLE VOICEMAILS
+          // Twilio AMD voicemailMode causes 5-8sec delay after call is answered which is unacceptable...
+          const started = await placeOutboundCalls(
+            env,
+            e164Targets,
+            voiceUrl,
+            voicemailMode
+          );
+
           const humanList = e164Targets.join(", ");
           const ack =
             started.length > 0

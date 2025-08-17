@@ -109,18 +109,23 @@ export async function placeOutboundCalls(env: Env, e164Targets: string[], voiceU
       };
 
       // Add AMD settings based on mode
-      if (!fastMode) {
-        // Optimized mode: Fast 3-second AMD (down from 30s+ default)
+      if (fastMode) {
+        // Ultra-fast mode: Quick but reliable voicemail detection
+        params.MachineDetection = 'Enable';
+        params.MachineDetectionTimeout = '3';        // 3 seconds max (was 2)
+        params.MachineDetectionSpeechThreshold = '800';  // 0.8 seconds to detect human (very sensitive)
+        params.MachineDetectionSpeechEndThreshold = '400'; // 0.4 second silence (very sensitive)
+      } else {
+        // Optimized mode: Standard fast 3-second AMD 
         params.MachineDetection = 'Enable';
         params.MachineDetectionTimeout = '3';
         params.MachineDetectionSpeechThreshold = '2000';
         params.MachineDetectionSpeechEndThreshold = '1000';
       }
-      // Ultra-fast mode: No AMD params added (immediate connection, AI handles voicemails)
 
       const body = new URLSearchParams(params);
       
-      rackyLog(`[outbound] Calling ${e164} with AMD: ${fastMode ? 'DISABLED' : 'ENABLED (3s timeout)'}`);
+      rackyLog(`[outbound] Calling ${e164} with AMD: ${fastMode ? 'ULTRA-FAST (3s/sensitive)' : 'OPTIMIZED (3s/standard)'}`);
       
       const res = await fetch(`${TWILIO_API_BASE}/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, {
         method: 'POST',

@@ -95,9 +95,10 @@ export function parseGroupNumbers(text: string): string[] {
   return numbers;
 }
 
-export async function placeOutboundCalls(env: Env, e164Targets: string[], voiceUrl: string, fastMode: boolean = false): Promise<string[]> {
+export async function placeOutboundCalls(env: Env, e164Targets: string[], voiceUrl: string, fastMode: boolean = false, disableAMD: boolean = false): Promise<string[]> {
   const callSids: string[] = [];
-  rackyLog(`[outbound] Creating ${e164Targets.length} calls with ${fastMode ? 'FAST' : 'OPTIMIZED'} mode`);
+  const mode = disableAMD ? 'INSTANT' : fastMode ? 'FAST' : 'OPTIMIZED';
+  rackyLog(`[outbound] Creating ${e164Targets.length} calls with ${mode} mode`);
   
   for (const e164 of e164Targets) {
     try {
@@ -109,23 +110,23 @@ export async function placeOutboundCalls(env: Env, e164Targets: string[], voiceU
       };
 
       // Add AMD settings based on mode
-      if (fastMode) {
-        // Ultra-fast mode: Quick but reliable voicemail detection
+      if (disableAMD) {
+        // No AMD - instant connection, AI handles voicemails after connection
+        // Don't add any MachineDetection parameters
+      } else if (fastMode) {
+        // Ultra-fast mode: Basic AMD with short timeout for quick voicemail detection
         params.MachineDetection = 'Enable';
-        params.MachineDetectionTimeout = '3';        // 3 seconds max (was 2)
-        params.MachineDetectionSpeechThreshold = '800';  // 0.8 seconds to detect human (very sensitive)
-        params.MachineDetectionSpeechEndThreshold = '400'; // 0.4 second silence (very sensitive)
+        params.MachineDetectionTimeout = '4';  // 4 seconds max (minimum practical for reliability)
       } else {
-        // Optimized mode: Standard fast 3-second AMD 
+        // Optimized mode: Standard AMD with longer timeout
         params.MachineDetection = 'Enable';
-        params.MachineDetectionTimeout = '3';
-        params.MachineDetectionSpeechThreshold = '2000';
-        params.MachineDetectionSpeechEndThreshold = '1000';
+        params.MachineDetectionTimeout = '8';  // 8 seconds (down from 30+ default)
       }
 
       const body = new URLSearchParams(params);
       
-      rackyLog(`[outbound] Calling ${e164} with AMD: ${fastMode ? 'ULTRA-FAST (3s/sensitive)' : 'OPTIMIZED (3s/standard)'}`);
+      const amdMode = disableAMD ? 'DISABLED (instant)' : fastMode ? 'ULTRA-FAST (4s timeout)' : 'OPTIMIZED (8s timeout)';
+      rackyLog(`[outbound] Calling ${e164} with AMD: ${amdMode}`);
       
       const res = await fetch(`${TWILIO_API_BASE}/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, {
         method: 'POST',

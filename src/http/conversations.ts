@@ -113,10 +113,11 @@ export async function handleTwilioConversationsWebhook(
           const origin = new URL(request.url).origin;
           const voiceUrl = `${origin}/twilio/voice`;
           
-          // Use fast mode for immediate AI response with sensitive voicemail detection
-          // To completely disable AMD: set fastMode = false and modify helpers.ts
+          // Use fast mode for immediate AI response with 4-second AMD
+          // For absolute fastest (no voicemail detection): use disableAMD = true
           const fastMode = true;
-          const started = await placeOutboundCalls(env, e164Targets, voiceUrl, fastMode);
+          const disableAMD = false; // Set to true for instant connection (no voicemail detection)
+          const started = await placeOutboundCalls(env, e164Targets, voiceUrl, fastMode, disableAMD);
           
           const humanList = e164Targets.join(", ");
           const ack =

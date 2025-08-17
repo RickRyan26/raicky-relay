@@ -139,6 +139,7 @@ export async function createTwilioRealtimeBridge(
   let timeLimitTimer: ReturnType<typeof setTimeout> | null = null;
   let timeLimitClosing = false;
   let timeLimitCloseFallback: ReturnType<typeof setTimeout> | null = null;
+  let timeLimitCloseRequested = false;
 
   function sendFinalAndClose() {
     if (timeLimitClosing) return;
@@ -207,6 +208,34 @@ export async function createTwilioRealtimeBridge(
     if (alreadyClosed) return;
     voicemailCloseRequested = true;
     finalizeVoicemailCloseIfDrained();
+  }
+
+  function finalizeTimeLimitCloseIfDrained() {
+    if (!timeLimitCloseRequested || alreadyClosed) return;
+    const postDrainDelay = 1500;
+    if (markQueue.length === 0) {
+      try {
+        setTimeout(() => {
+          if (alreadyClosed) return;
+          alreadyClosed = true;
+          try {
+            serverSocket.close(1000, "time_limit");
+          } catch {}
+          try {
+            realtimeClient?.disconnect();
+          } catch {}
+          try {
+            if (timeLimitCloseFallback) clearTimeout(timeLimitCloseFallback);
+          } catch {}
+        }, postDrainDelay);
+      } catch {}
+    }
+  }
+
+  function tryCloseTimeLimitAfterDrain() {
+    if (alreadyClosed) return;
+    timeLimitCloseRequested = true;
+    finalizeTimeLimitCloseIfDrained();
   }
 
   let realtimeClient: RealtimeClient | null = null;
@@ -358,12 +387,8 @@ export async function createTwilioRealtimeBridge(
         tryCloseVoicemailAfterDrain();
       }
       if (timeLimitClosing && evt.type === "response.done") {
-        try {
-          serverSocket.close(1000, "time_limit");
-        } catch {}
-        try {
-          realtimeClient?.disconnect();
-        } catch {}
+        // After the final response is generated, wait for audio to drain to Twilio
+        tryCloseTimeLimitAfterDrain();
       }
     } catch (error) {
       rackyError("Error processing OpenAI message (Twilio mode)", error);
@@ -542,6 +567,9 @@ export async function createTwilioRealtimeBridge(
         case "mark": {
           if (isMarkEvent(twilioEvent)) {
             if (markQueue.length > 0) markQueue.shift();
+            // Check if any pending graceful closures can complete now that audio is drained
+            finalizeVoicemailCloseIfDrained();
+            finalizeTimeLimitCloseIfDrained();
           }
           break;
         }

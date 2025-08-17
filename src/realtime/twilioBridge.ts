@@ -205,8 +205,6 @@ export async function createTwilioRealtimeBridge(
 
   function tryCloseVoicemailAfterDrain() {
     if (alreadyClosed) return;
-    const drainTime = Date.now() - connectionStart;
-    rackyLog(`[timing] Voicemail close requested at +${drainTime}ms - markQueue length: ${markQueue.length}`);
     voicemailCloseRequested = true;
     finalizeVoicemailCloseIfDrained();
   }
@@ -357,7 +355,6 @@ export async function createTwilioRealtimeBridge(
       }
       if (voicemailMode && evt.type === "response.done") {
         // For voicemail we close after audio drains only
-        rackyLog(`[timing] Voicemail response.done event - initiating voicemail close sequence`);
         tryCloseVoicemailAfterDrain();
       }
       if (timeLimitClosing && evt.type === "response.done") {

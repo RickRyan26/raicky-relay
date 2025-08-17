@@ -15,7 +15,7 @@ export function buildInitialCallGreeting(options: {
   if (options.callDirection === "inbound") {
     result = `Greet the user with "${greeting} Thanks for calling! How can I help you today?"`;
   } else if (options.callDirection === "outbound") {
-    result = `Greet the user with "${greeting} I'm reaching out to see if I can assist you with anything today."`;
+    result = `Greet the user with "${greeting} I'm reaching out to chat and see if you might have any driveway gate related questions."`;
   } else {
     result = `Greet the user with "${greeting} How can I help?"`;
   }

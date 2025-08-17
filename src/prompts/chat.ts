@@ -8,13 +8,14 @@ export function buildInitialCallGreeting(options: {
 }): string {
   let result = "";
   const greeting = `Hello, this is the ${BRAND} A.I. assistant.`;
-  if (options.voicemailMode) {
-    result = `SYSTEM: You are leaving a voicemail. Do not greet. Do not ask questions. Speak the following EXACTLY:
-     "${greeting} Sorry I missed you! If you have any questions about our gates, openers, installations, or anything else, just call back or shoot me a text and I'll help right away."`;
-  } else if (options.callDirection === "inbound") {
+  // if (options.voicemailMode) {
+  //   result = `SYSTEM: You are leaving a voicemail. Do not greet. Do not ask questions. Speak the following EXACTLY:
+  //    "${greeting} Sorry I missed you! If you have any questions about our gates, openers, installations, or anything else, just call back or shoot me a text and I'll help right away."`;
+  // } else
+  if (options.callDirection === "inbound") {
     result = `Greet the user with "${greeting} Thanks for calling! How can I help you today?"`;
   } else if (options.callDirection === "outbound") {
-    result = `Greet the user with "${greeting} I'm reaching out to help, what can I assist you with today?"`;
+    result = `Greet the user with "${greeting} I'm reaching out to see if I can assist you with anything today."`;
   } else {
     result = `Greet the user with "${greeting} How can I help?"`;
   }
@@ -56,9 +57,9 @@ export function textConcatPrompt(basePrompt: string): string {
 export function realtimeConcatPrompt(basePrompt: string): string {
   return `Speed (CRITICAL): Speak fast!
  
-  Voicemail Rule (CRITICAL): Voicemails are super brief - just say who you are ("${BRAND}" A.I. assistant), that you missed them, and they can call/text back. That's it!
-  When leaving a voicemail, do not ask questions or use the default greeting. Speak the exact voicemail content that is provided.
-   
+  Voicemail Rule (CRITICAL): Voicemails are super brief Speak the following EXACTLY:
+  "Hello, this is the ${BRAND} A.I. assistant. Sorry I missed you! If you have any questions about our gates, openers, installations, or anything else, just call me back or shoot me a text and I'll help you right away."
+     
   ${basePrompt}`;
 }
 

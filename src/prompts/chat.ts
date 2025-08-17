@@ -1,21 +1,25 @@
+import { rackyLog } from "../utils/log";
+
 export const BRAND = "GateFrames.com";
 
 export function buildInitialCallGreeting(options: {
   voicemailMode: boolean;
   callDirection: "inbound" | "outbound" | "unknown";
 }): string {
+  let result = "";
   const greeting = `Hello, this is the ${BRAND} A.I. assistant.`;
   if (options.voicemailMode) {
-    return `SYSTEM: You are leaving a voicemail. Do not greet. Do not ask questions. Speak the following EXACTLY.
-"${greeting} Sorry I missed you! If you have any questions about our gates, openers, installations, or anything else, just call back or shoot me a text and I'll help right away."`;
+    result = `SYSTEM: You are leaving a voicemail. Do not greet. Do not ask questions. Speak the following EXACTLY:
+     "${greeting} Sorry I missed you! If you have any questions about our gates, openers, installations, or anything else, just call back or shoot me a text and I'll help right away."`;
+  } else if (options.callDirection === "inbound") {
+    result = `Greet the user with "${greeting} Thanks for calling! How can I help you today?"`;
+  } else if (options.callDirection === "outbound") {
+    result = `Greet the user with "${greeting} I'm reaching out to help, what can I assist you with today?"`;
+  } else {
+    result = `Greet the user with "${greeting} How can I help?"`;
   }
-  if (options.callDirection === "inbound") {
-    return `Greet the user with "${greeting} Thanks for calling! How can I help you today?"`;
-  }
-  if (options.callDirection === "outbound") {
-    return `Greet the user with "${greeting} I'm reaching out to help, what can I assist you with today?"`;
-  }
-  return `Greet the user with "${greeting} How can I help?"`;
+  rackyLog(`[buildInitialCallGreeting] ${result}`);
+  return result;
 }
 
 export function chatPrompt(currentIsoTimestamp: string): string {
@@ -61,14 +65,14 @@ export function realtimeConcatPrompt(basePrompt: string): string {
 // Test function to verify voicemail greeting logic
 // export function testVoicemailGreeting() {
 //   console.log("Testing voicemail greetings:");
-  
+
 //   const testCases = [
 //     { voicemailMode: true, callDirection: "inbound" as const, expected: "voicemail message" },
 //     { voicemailMode: false, callDirection: "inbound" as const, expected: "inbound greeting" },
 //     { voicemailMode: false, callDirection: "outbound" as const, expected: "outbound greeting" },
 //     { voicemailMode: false, callDirection: "unknown" as const, expected: "fallback greeting" }
 //   ];
-  
+
 //   testCases.forEach((test, i) => {
 //     const result = buildInitialCallGreeting(test);
 //     console.log(`Test ${i + 1}: voicemailMode=${test.voicemailMode}, direction=${test.callDirection}`);

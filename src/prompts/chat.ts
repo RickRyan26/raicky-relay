@@ -2,25 +2,30 @@ import { rackyLog } from "../utils/log";
 
 export const BRAND = "GateFrames.com";
 
+const GREETING = `Hello, this is the ${BRAND} A.I. assistant.`;
+
 export function buildInitialCallGreeting(options: {
   voicemailMode: boolean;
   callDirection: "inbound" | "outbound" | "unknown";
 }): string {
   let result = "";
-  const greeting = `Hello, this is the ${BRAND} A.I. assistant.`;
   // if (options.voicemailMode) {
   //   result = `SYSTEM: You are leaving a voicemail. Do not greet. Do not ask questions. Speak the following EXACTLY:
   //    "${greeting} Sorry I missed you! If you have any questions about our gates, openers, installations, or anything else, just call back or shoot me a text and I'll help right away."`;
   // } else
   if (options.callDirection === "inbound") {
-    result = `Greet the user with "${greeting} Thanks for calling! How can I help you today?"`;
+    result = `Greet the user with "${GREETING} Thanks for calling! How can I help you today?"`;
   } else if (options.callDirection === "outbound") {
-    result = `Greet the user with "${greeting} I'm reaching out to chat as a friend and see if you might have any driveway gate related questions."`;
+    result = `Greet the user with "${GREETING} I'm reaching out to chat as a friend and see if you might have any driveway gate related questions."`;
   } else {
-    result = `Greet the user with "${greeting} How can I help?"`;
+    result = `Greet the user with "${GREETING} How can I help?"`;
   }
   rackyLog(`[buildInitialCallGreeting] ${result}`);
   return result;
+}
+
+export function groupGreetingPrompt(): string {
+  return `Hello, this is the GateFrames.com AI assistant. Happy to help here. Mention @ai when you want me to jump in.`;
 }
 
 export function chatPrompt(currentIsoTimestamp: string): string {
@@ -49,7 +54,7 @@ export function chatPrompt(currentIsoTimestamp: string): string {
 }
 
 export function textConcatPrompt(basePrompt: string): string {
-  return `Writing: Use emojis sparingly to enhance clarity and emotion 🙂
+  return `Writing: Use emojis sparingly to enhance clarity and emotion 🙂. This is MMS text conversation, so keep it short and concise, significantly less than the 1600 character limit.
   
   ${basePrompt}`;
 }

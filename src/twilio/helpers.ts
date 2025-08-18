@@ -1,11 +1,11 @@
-import type { Env } from "../config/env";
 import {
   BOT_IDENTITY,
-  CONVO_CONTEXT_LIMIT,
   PROJECTED_ADDRESS,
   TWILIO_API_BASE,
-  TWILIO_CONV_BASE,
+  TWILIO_CONV_BASE
 } from "../config/config";
+import type { Env } from "../config/env";
+import { groupGreetingPrompt } from "../prompts/chat";
 import { rackyError, rackyLog } from "../utils/log";
 
 export function twilioAuthHeader(env: Env): string {
@@ -211,7 +211,7 @@ export async function createConversationWithParticipants(
       `/Conversations/${ch}/Messages`,
       new URLSearchParams({
         Author: BOT_IDENTITY,
-        Body: `Hi! I’m the "Gate Frames" AI assistant—happy to help here. Mention @ai when you want me to jump in.`,
+        Body: groupGreetingPrompt(),
       })
     );
     return ch;
